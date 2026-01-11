@@ -88,6 +88,7 @@ qpa_cnt = (len(qas) + 1) // 2          # qpa_cnt = 2
 
 # 阶段1+2（QA 0-1）：passage + QA对
 for qid in [0, 1]:  # 前2个QA
+    qa = qas[qid]
     for ppp in [原始passage, 重写passage]:
         train(question=qa["question"], 
               context=ppp,           # ✅ 带上下文
@@ -95,6 +96,7 @@ for qid in [0, 1]:  # 前2个QA
 
 # 阶段3（QA 2）：仅QA对，无passage
 for qid in [2]:  # 后1个QA
+    qa = qas[qid]
     train(question=qa["question"], 
           context=None,              # ❌ 不给上下文
           answer=qa["answer"])
@@ -158,6 +160,7 @@ def get_train_data(aug_model, augments, tokenizer, args):
         
         # 第一部分：前一半QA + 原始/重写文档
         for qid in range(qpa_cnt):  # [0, 1]
+            qa = qas[qid]
             for ppp in [psg, rew]:  # 原始和重写都训练
                 prompt_ids.append(
                     get_prompt(tokenizer, 
@@ -168,6 +171,7 @@ def get_train_data(aug_model, augments, tokenizer, args):
         
         # 第二部分：后一半QA 无文档
         for qid in range(qpa_cnt, len(qas)):  # [2]
+            qa = qas[qid]
             prompt_ids.append(
                 get_prompt(tokenizer, 
                           qa["question"], 
