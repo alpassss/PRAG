@@ -180,15 +180,16 @@ def check_adapter_loading(args):
         if hasattr(model, 'active_adapters'):
             print(f"\n  Active adapters: {model.active_adapters}")
         
-        # Try merging adapters
+        # Try merging adapters (using same method as inference.py)
         print(f"\n  Merging adapters...")
+        num_adapters = len(passages)
         model.add_weighted_adapter(
-            adapters = [str(i) for i in range(len(passages))], 
-            weights = [1] * len(passages),
+            adapters = [str(i) for i in range(num_adapters)], 
+            weights = [1.0 / num_adapters] * num_adapters,
             adapter_name = "merge", 
-            combination_type = "cat",
+            combination_type = "linear",  # Using linear to match the fix in inference.py
         )
-        print(f"    ✓ Created 'merge' adapter")
+        print(f"    ✓ Created 'merge' adapter (linear combination with normalized weights)")
         
         model.set_adapter("merge")
         print(f"    ✓ Set 'merge' as active adapter")

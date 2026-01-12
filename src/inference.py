@@ -3,6 +3,7 @@ import gc
 import json
 import argparse
 import torch
+import warnings
 from tqdm import tqdm
 from peft import PeftModel
 
@@ -97,11 +98,11 @@ def main(args):
                     combination_type = "linear",
                 )
                 model.set_adapter("merge")
-                # Verify adapter is active
+                # Verify adapter is active (helps with debugging)
                 if hasattr(model, 'active_adapter'):
                     current_adapter = model.active_adapter
                     if current_adapter != "merge":
-                        print(f"Warning: Expected adapter 'merge' but got '{current_adapter}'")
+                        warnings.warn(f"Expected adapter 'merge' but got '{current_adapter}'")
                 ret.append(get_pred(model, psgs=None if args.inference_method == "prag" else passages))
                 model.delete_adapter("merge")
                 model = model.unload()
