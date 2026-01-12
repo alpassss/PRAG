@@ -87,13 +87,21 @@ def main(args):
                     else:
                         model.load_adapter(adapter_path, adapter_name = str(pid)) 
                 # merge
+                # Use linear combination instead of cat for better compatibility
+                # Normalize weights so each adapter contributes equally
+                num_adapters = len(passages)
                 model.add_weighted_adapter(
-                    adapters = [str(i) for i in range(len(passages))], 
-                    weights = [1] * len(passages),
+                    adapters = [str(i) for i in range(num_adapters)], 
+                    weights = [1.0 / num_adapters] * num_adapters,
                     adapter_name = "merge", 
-                    combination_type = "cat",
+                    combination_type = "linear",
                 )
                 model.set_adapter("merge")
+                # Verify adapter is active
+                if hasattr(model, 'active_adapter'):
+                    current_adapter = model.active_adapter
+                    if current_adapter != "merge":
+                        print(f"Warning: Expected adapter 'merge' but got '{current_adapter}'")
                 ret.append(get_pred(model, psgs=None if args.inference_method == "prag" else passages))
                 model.delete_adapter("merge")
                 model = model.unload()
