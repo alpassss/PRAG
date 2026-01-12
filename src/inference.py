@@ -76,23 +76,36 @@ def main(args):
             if args.inference_method == "icl":
                 ret.append(get_pred(model, psgs=passages))
             else:
+                # Load adapters for each passage
+                # IMPORTANT: Don't specify adapter_name to match how they were saved during encoding
                 for pid in range(len(passages)):
                     adapter_path = os.path.join(load_adapter_path, filename, f"data_{test_id}", f"passage_{pid}")
                     if pid == 0:
+                        # Load first adapter without specifying adapter_name
                         model = PeftModel.from_pretrained(
                             model, 
                             adapter_path,
-                            adapter_name = "0", 
                             is_trainable = False
                         )
+                        # Get the default adapter name that was assigned
+                        first_adapter_name = model.active_adapter if hasattr(model, 'active_adapter') else "default"
                     else:
-                        model.load_adapter(adapter_path, adapter_name = str(pid)) 
+                        # Load additional adapters with unique names
+                        model.load_adapter(adapter_path, adapter_name = f"adapter_{pid}") 
+                
+                # Get list of all loaded adapter names
+                if hasattr(model, 'peft_config'):
+                    adapter_names = list(model.peft_config.keys())
+                else:
+                    # Fallback: assume default naming
+                    adapter_names = ["default"] + [f"adapter_{i}" for i in range(1, len(passages))]
+                
                 # merge
                 # Use linear combination instead of cat for better compatibility
                 # Normalize weights so each adapter contributes equally
                 num_adapters = len(passages)
                 model.add_weighted_adapter(
-                    adapters = [str(i) for i in range(num_adapters)], 
+                    adapters = adapter_names[:num_adapters], 
                     weights = [1.0 / num_adapters] * num_adapters,
                     adapter_name = "merge", 
                     combination_type = "linear",

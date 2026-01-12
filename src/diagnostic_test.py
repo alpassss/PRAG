@@ -166,25 +166,34 @@ def check_adapter_loading(args):
                 model = PeftModel.from_pretrained(
                     model, 
                     adapter_path,
-                    adapter_name = "0", 
                     is_trainable = False
                 )
-                print(f"    ✓ Loaded as adapter '0'")
+                # Get the default adapter name that was assigned
+                first_adapter_name = model.active_adapter if hasattr(model, 'active_adapter') else "default"
+                print(f"    ✓ Loaded with adapter name: '{first_adapter_name}'")
                 print(f"    Model type: {type(model).__name__}")
             else:
                 print(f"\n  Loading additional adapter (pid={pid})...")
-                model.load_adapter(adapter_path, adapter_name = str(pid))
-                print(f"    ✓ Loaded as adapter '{pid}'")
+                model.load_adapter(adapter_path, adapter_name = f"adapter_{pid}")
+                print(f"    ✓ Loaded as adapter 'adapter_{pid}'")
+        
+        # Get list of all loaded adapter names
+        if hasattr(model, 'peft_config'):
+            adapter_names = list(model.peft_config.keys())
+            print(f"\n  All loaded adapters: {adapter_names}")
+        else:
+            adapter_names = ["default"] + [f"adapter_{i}" for i in range(1, len(passages))]
+            print(f"\n  Assuming adapter names: {adapter_names}")
         
         # Check active adapters
         if hasattr(model, 'active_adapters'):
-            print(f"\n  Active adapters: {model.active_adapters}")
+            print(f"  Active adapters: {model.active_adapters}")
         
         # Try merging adapters (using same method as inference.py)
         print(f"\n  Merging adapters...")
         num_adapters = len(passages)
         model.add_weighted_adapter(
-            adapters = [str(i) for i in range(num_adapters)], 
+            adapters = adapter_names[:num_adapters], 
             weights = [1.0 / num_adapters] * num_adapters,
             adapter_name = "merge", 
             combination_type = "linear",  # Using linear to match the fix in inference.py
