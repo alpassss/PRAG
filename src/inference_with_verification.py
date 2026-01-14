@@ -13,7 +13,11 @@ from utils import get_model, evaluate, predict, load_data, read_complete
 
 
 def compare_model_parameters(base_model, modified_model, sample_layers=3):
-    """Compare parameters between base and modified model to verify LoRA is active"""
+    """Compare parameters between base and modified model to verify LoRA is active
+    
+    Note: LoRA adds new parameters (lora_A, lora_B) to the model. We need to compare
+    the base model parameters to see if they've been modified by LoRA's influence.
+    """
     base_params = dict(base_model.named_parameters())
     modified_params = dict(modified_model.named_parameters())
     
@@ -21,16 +25,40 @@ def compare_model_parameters(base_model, modified_model, sample_layers=3):
     total_count = 0
     max_diff = 0.0
     
-    # Sample a few layers to check
-    param_names = list(base_params.keys())[:sample_layers * 10] if sample_layers else base_params.keys()
+    # Get base model parameter names (excluding any LoRA-specific params if present)
+    base_param_names = [name for name in base_params.keys() if 'lora_' not in name.lower()]
     
-    for name in param_names:
+    # Sample parameters to check - focus on MLP layers where LoRA is typically applied
+    if sample_layers:
+        # Prioritize checking MLP layer parameters
+        mlp_params = [name for name in base_param_names if 'mlp' in name.lower()]
+        other_params = [name for name in base_param_names if 'mlp' not in name.lower()]
+        param_names_to_check = (mlp_params[:sample_layers * 3] + other_params[:sample_layers * 3])[:sample_layers * 6]
+    else:
+        param_names_to_check = base_param_names
+    
+    # Compare parameters
+    for name in param_names_to_check:
+        # For LoRA models, the base parameter still exists but may have same name
+        # We check if this parameter exists in the modified model
         if name in modified_params:
             total_count += 1
-            diff = torch.max(torch.abs(base_params[name] - modified_params[name])).item()
-            if diff > 1e-6:
-                changed_count += 1
-                max_diff = max(max_diff, diff)
+            try:
+                # Get parameter values
+                base_val = base_params[name].detach()
+                mod_val = modified_params[name].detach()
+                
+                # Check if shapes match (they should for base params)
+                if base_val.shape == mod_val.shape:
+                    diff = torch.max(torch.abs(base_val - mod_val)).item()
+                    if diff > 1e-6:
+                        changed_count += 1
+                        max_diff = max(max_diff, diff)
+            except Exception as e:
+                # Skip parameters that can't be compared
+                print(f"  [Debug] Could not compare {name}: {e}")
+                total_count -= 1
+                continue
     
     return changed_count, total_count, max_diff
 
@@ -242,7 +270,11 @@ def main(args):
                         del base_model_temp
                         torch.cuda.empty_cache()
                         
-                        if changed > 0:
+                        if total_count == 0:
+                            print(f"  ⚠ Warning: No comparable parameters found (0/0)")
+                            print(f"    This may indicate a model structure issue")
+                            print(f"    LoRA adapters may still be active but comparison failed")
+                        elif changed > 0:
                             print(f"  ✓ Model parameters CHANGED by LoRA")
                             print(f"    - {changed}/{total} sampled parameters are different")
                             print(f"    - Maximum difference: {max_diff:.6f}")
