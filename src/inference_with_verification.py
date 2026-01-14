@@ -15,8 +15,8 @@ from utils import get_model, evaluate, predict, load_data, read_complete
 def compare_model_parameters(base_model, modified_model, sample_layers=3):
     """Compare parameters between base and modified model to verify LoRA is active
     
-    Note: LoRA adds new parameters (lora_A, lora_B) to the model. We need to compare
-    the base model parameters to see if they've been modified by LoRA's influence.
+    Note: LoRA models wrap base model params with 'base_model.model.' prefix.
+    We need to match parameters correctly and check if LoRA modified them.
     """
     base_params = dict(base_model.named_parameters())
     modified_params = dict(modified_model.named_parameters())
@@ -25,7 +25,7 @@ def compare_model_parameters(base_model, modified_model, sample_layers=3):
     total_count = 0
     max_diff = 0.0
     
-    # Get base model parameter names (excluding any LoRA-specific params if present)
+    # Get base model parameter names (excluding any LoRA-specific params)
     base_param_names = [name for name in base_params.keys() if 'lora_' not in name.lower()]
     
     # Sample parameters to check - focus on MLP layers where LoRA is typically applied
@@ -38,15 +38,27 @@ def compare_model_parameters(base_model, modified_model, sample_layers=3):
         param_names_to_check = base_param_names
     
     # Compare parameters
-    for name in param_names_to_check:
-        # For LoRA models, the base parameter still exists but may have same name
-        # We check if this parameter exists in the modified model
-        if name in modified_params:
+    for base_name in param_names_to_check:
+        # LoRA wraps base model, so parameter names may have 'base_model.model.' prefix
+        # Try multiple name formats
+        possible_names = [
+            base_name,
+            f"base_model.model.{base_name}",
+            f"model.{base_name}",
+        ]
+        
+        mod_name = None
+        for candidate in possible_names:
+            if candidate in modified_params:
+                mod_name = candidate
+                break
+        
+        if mod_name:
             total_count += 1
             try:
                 # Get parameter values
-                base_val = base_params[name].detach()
-                mod_val = modified_params[name].detach()
+                base_val = base_params[base_name].detach()
+                mod_val = modified_params[mod_name].detach()
                 
                 # Check if shapes match (they should for base params)
                 if base_val.shape == mod_val.shape:
@@ -56,7 +68,7 @@ def compare_model_parameters(base_model, modified_model, sample_layers=3):
                         max_diff = max(max_diff, diff)
             except Exception as e:
                 # Skip parameters that can't be compared
-                print(f"  [Debug] Could not compare {name}: {e}")
+                print(f"  [Debug] Could not compare {base_name}: {e}")
                 total_count -= 1
                 continue
     
