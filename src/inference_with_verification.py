@@ -12,7 +12,7 @@ from root_dir_path import ROOT_DIR
 from utils import get_model, evaluate, predict, load_data, read_complete
 
 
-def compare_model_parameters(base_model, modified_model, sample_layers=3):
+def compare_model_parameters(base_model, modified_model, sample_layers=10):
     """Compare parameters between base and modified model to verify LoRA is active
     
     Note: LoRA models wrap base model params with 'base_model.model.' prefix.
@@ -24,6 +24,7 @@ def compare_model_parameters(base_model, modified_model, sample_layers=3):
     changed_count = 0
     total_count = 0
     max_diff = 0.0
+    compared_params = []  # Track which parameters we compared
     
     # Get base model parameter names (excluding any LoRA-specific params)
     base_param_names = [name for name in base_params.keys() if 'lora_' not in name.lower()]
@@ -63,6 +64,7 @@ def compare_model_parameters(base_model, modified_model, sample_layers=3):
                 # Check if shapes match (they should for base params)
                 if base_val.shape == mod_val.shape:
                     diff = torch.max(torch.abs(base_val - mod_val)).item()
+                    compared_params.append((base_name, diff))
                     if diff > 1e-6:
                         changed_count += 1
                         max_diff = max(max_diff, diff)
@@ -72,7 +74,7 @@ def compare_model_parameters(base_model, modified_model, sample_layers=3):
                 total_count -= 1
                 continue
     
-    return changed_count, total_count, max_diff
+    return changed_count, total_count, max_diff, compared_params
 
 
 def main(args):
@@ -278,9 +280,16 @@ def main(args):
                     # Load a clean base model for comparison
                     try:
                         base_model_temp, _, _ = get_model(args.model_name, max_new_tokens=args.max_new_tokens)
-                        changed, total, max_diff = compare_model_parameters(base_model_temp, model, sample_layers=3)
+                        changed, total, max_diff, compared_params = compare_model_parameters(base_model_temp, model, sample_layers=10)
                         del base_model_temp
                         torch.cuda.empty_cache()
+                        
+                        # Show which parameters were compared
+                        if total > 0:
+                            print(f"  Compared {total} parameters (showing first 5):")
+                            for i, (param_name, diff) in enumerate(compared_params[:5]):
+                                status = "✓" if diff > 1e-6 else "✗"
+                                print(f"    {status} {param_name}: diff={diff:.6f}")
                         
                         if total == 0:
                             print(f"  ⚠ Warning: No comparable parameters found (0/0)")
@@ -335,7 +344,7 @@ def main(args):
         
         print(f"\nResults on {len(ret)} samples:")
         for met in metrics:
-            acc = sum(float(d[met]) for d in ret) / len(ret)
+            acc = sum(float(d.get(met, 0)) for d in ret) / len(ret)
             acc = round(acc, 4)
             ret_str += f"{met}\t{acc}\n"
             print(f"  {met.upper()}: {acc:.4f}")
