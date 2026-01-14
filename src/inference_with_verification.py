@@ -270,7 +270,7 @@ def main(args):
                         del base_model_temp
                         torch.cuda.empty_cache()
                         
-                        if total_count == 0:
+                        if total == 0:
                             print(f"  ⚠ Warning: No comparable parameters found (0/0)")
                             print(f"    This may indicate a model structure issue")
                             print(f"    LoRA adapters may still be active but comparison failed")
