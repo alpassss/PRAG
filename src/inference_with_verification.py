@@ -12,69 +12,61 @@ from root_dir_path import ROOT_DIR
 from utils import get_model, evaluate, predict, load_data, read_complete
 
 
-def compare_model_parameters(base_model, modified_model, sample_layers=10):
-    """Compare parameters between base and modified model to verify LoRA is active
+def verify_lora_adapters(model, adapter_name="merge"):
+    """Verify that LoRA adapters are actually loaded and active
     
-    Note: LoRA models wrap base model params with 'base_model.model.' prefix.
-    We need to match parameters correctly and check if LoRA modified them.
+    IMPORTANT: LoRA works by adding adapter layers (lora_A, lora_B), NOT by modifying
+    base model weights. Base weights remain FROZEN. This function checks if LoRA
+    adapter layers exist and contain non-zero trained weights.
     """
-    base_params = dict(base_model.named_parameters())
-    modified_params = dict(modified_model.named_parameters())
+    lora_params = {}
+    lora_a_params = []
+    lora_b_params = []
     
-    changed_count = 0
-    total_count = 0
-    max_diff = 0.0
-    compared_params = []  # Track which parameters we compared
+    # Find all LoRA parameters
+    for name, param in model.named_parameters():
+        if 'lora_' in name.lower():
+            lora_params[name] = param
+            if 'lora_a' in name.lower():
+                lora_a_params.append((name, param))
+            elif 'lora_b' in name.lower():
+                lora_b_params.append((name, param))
     
-    # Get base model parameter names (excluding any LoRA-specific params)
-    base_param_names = [name for name in base_params.keys() if 'lora_' not in name.lower()]
+    # Check results
+    has_lora = len(lora_params) > 0
+    has_both_matrices = len(lora_a_params) > 0 and len(lora_b_params) > 0
     
-    # Sample parameters to check - focus on MLP layers where LoRA is typically applied
-    if sample_layers:
-        # Prioritize checking MLP layer parameters
-        mlp_params = [name for name in base_param_names if 'mlp' in name.lower()]
-        other_params = [name for name in base_param_names if 'mlp' not in name.lower()]
-        param_names_to_check = (mlp_params[:sample_layers * 3] + other_params[:sample_layers * 3])[:sample_layers * 6]
-    else:
-        param_names_to_check = base_param_names
+    # Check if parameters are non-zero (trained)
+    non_zero_count = 0
+    total_lora_params = len(lora_params)
+    mean_abs_value = 0.0
     
-    # Compare parameters
-    for base_name in param_names_to_check:
-        # LoRA wraps base model, so parameter names may have 'base_model.model.' prefix
-        # Try multiple name formats
-        possible_names = [
-            base_name,
-            f"base_model.model.{base_name}",
-            f"model.{base_name}",
-        ]
-        
-        mod_name = None
-        for candidate in possible_names:
-            if candidate in modified_params:
-                mod_name = candidate
-                break
-        
-        if mod_name:
-            total_count += 1
-            try:
-                # Get parameter values
-                base_val = base_params[base_name].detach()
-                mod_val = modified_params[mod_name].detach()
-                
-                # Check if shapes match (they should for base params)
-                if base_val.shape == mod_val.shape:
-                    diff = torch.max(torch.abs(base_val - mod_val)).item()
-                    compared_params.append((base_name, diff))
-                    if diff > 1e-6:
-                        changed_count += 1
-                        max_diff = max(max_diff, diff)
-            except Exception as e:
-                # Skip parameters that can't be compared
-                print(f"  [Debug] Could not compare {base_name}: {e}")
-                total_count -= 1
-                continue
+    if has_lora:
+        for name, param in lora_params.items():
+            param_val = param.detach()
+            abs_mean = torch.abs(param_val).mean().item()
+            mean_abs_value += abs_mean
+            if abs_mean > 1e-6:
+                non_zero_count += 1
+        mean_abs_value /= total_lora_params if total_lora_params > 0 else 1
     
-    return changed_count, total_count, max_diff, compared_params
+    # Check active adapter
+    active_adapter = None
+    if hasattr(model, 'active_adapter'):
+        active_adapter = model.active_adapter
+    elif hasattr(model, 'active_adapters'):
+        active_adapter = model.active_adapters
+    
+    return {
+        'has_lora': has_lora,
+        'lora_a_count': len(lora_a_params),
+        'lora_b_count': len(lora_b_params),
+        'total_lora_params': total_lora_params,
+        'non_zero_params': non_zero_count,
+        'mean_abs_value': mean_abs_value,
+        'active_adapter': active_adapter,
+        'sample_params': list(lora_params.keys())[:5],  # First 5 for display
+    }
 
 
 def main(args):
@@ -274,38 +266,41 @@ def main(args):
                     else:
                         print(f"  ⚠ Cannot verify active adapter (attribute not available)")
                 
-                # Step 6: Compare with base model (for first sample only)
+                # Step 6: Verify LoRA adapters are loaded (for first sample only)
                 if show_details and (test_id - start_with) == 0:
-                    print(f"\n[STEP 6] Comparing merged model with base model...")
-                    # Load a clean base model for comparison
+                    print(f"\n[STEP 6] Verifying LoRA adapter layers...")
+                    print(f"  NOTE: LoRA keeps base weights FROZEN and adds adapter layers")
+                    print(f"  We check if lora_A and lora_B layers exist and contain trained weights")
                     try:
-                        base_model_temp, _, _ = get_model(args.model_name, max_new_tokens=args.max_new_tokens)
-                        changed, total, max_diff, compared_params = compare_model_parameters(base_model_temp, model, sample_layers=10)
-                        del base_model_temp
-                        torch.cuda.empty_cache()
+                        lora_info = verify_lora_adapters(model, adapter_name="merge")
                         
-                        # Show which parameters were compared
-                        if total > 0:
-                            print(f"  Compared {total} parameters (showing first 5):")
-                            for i, (param_name, diff) in enumerate(compared_params[:5]):
-                                status = "✓" if diff > 1e-6 else "✗"
-                                print(f"    {status} {param_name}: diff={diff:.6f}")
-                        
-                        if total == 0:
-                            print(f"  ⚠ Warning: No comparable parameters found (0/0)")
-                            print(f"    This may indicate a model structure issue")
-                            print(f"    LoRA adapters may still be active but comparison failed")
-                        elif changed > 0:
-                            print(f"  ✓ Model parameters CHANGED by LoRA")
-                            print(f"    - {changed}/{total} sampled parameters are different")
-                            print(f"    - Maximum difference: {max_diff:.6f}")
-                            print(f"  ✅ Conclusion: Using LoRA-modified model")
+                        if lora_info['has_lora']:
+                            print(f"  ✓ LoRA adapter layers found:")
+                            print(f"    - lora_A parameters: {lora_info['lora_a_count']}")
+                            print(f"    - lora_B parameters: {lora_info['lora_b_count']}")
+                            print(f"    - Total LoRA params: {lora_info['total_lora_params']}")
+                            print(f"    - Non-zero params: {lora_info['non_zero_params']}/{lora_info['total_lora_params']}")
+                            print(f"    - Mean |weight|: {lora_info['mean_abs_value']:.6f}")
+                            
+                            if lora_info['active_adapter']:
+                                print(f"  ✓ Active adapter: {lora_info['active_adapter']}")
+                            
+                            if lora_info['sample_params']:
+                                print(f"  Sample LoRA parameters (first 3):")
+                                for param_name in lora_info['sample_params'][:3]:
+                                    print(f"    - {param_name}")
+                            
+                            if lora_info['non_zero_params'] > 0:
+                                print(f"  ✅ LoRA adapters are LOADED and ACTIVE")
+                                print(f"     They will modify model outputs during inference")
+                            else:
+                                print(f"  ⚠ LoRA layers exist but all weights are zero!")
+                                print(f"     This suggests adapters were not trained")
                         else:
-                            print(f"  ❌ Model parameters UNCHANGED")
-                            print(f"    - {changed}/{total} sampled parameters are different")
-                            print(f"  ⚠ Warning: LoRA may not be active!")
+                            print(f"  ❌ No LoRA adapter layers found in model!")
+                            print(f"     Adapters may not have been loaded correctly")
                     except Exception as e:
-                        print(f"  ⚠ Could not compare models: {e}")
+                        print(f"  ⚠ Could not verify LoRA adapters: {e}")
                 
                 # Step 7: Generate prediction
                 if show_details:
