@@ -9,6 +9,8 @@ import prompt_template
 from root_dir_path import ROOT_DIR
 from utils import get_model, evaluate, predict, load_data, read_complete, adapter_stats
 
+DEBUG_ADAPTER_LOG_LIMIT = 3
+
 def main(args):
     data_list = load_data(args.dataset, args.data_type, args.augment_model)
     model, tokenizer, generation_config = get_model(
@@ -84,9 +86,10 @@ def main(args):
                             is_trainable = False
                         )
                     else:
-                        model.load_adapter(adapter_path, adapter_name = str(pid))
-                    if pid < 3:
-                        print(f"[inference] load {adapter_path}: {adapter_stats(adapter_path)}")
+                        model.load_adapter(adapter_path, adapter_name=str(pid))
+                    if pid < DEBUG_ADAPTER_LOG_LIMIT:
+                        stats = adapter_stats(adapter_path)
+                        print(f"[inference] load {adapter_path}: {stats}")
                 # merge
                 lora_model = model.base_model if hasattr(model, "base_model") else model
                 lora_model.add_weighted_adapter(
@@ -96,10 +99,11 @@ def main(args):
                     combination_type = "cat",
                 )
                 model.set_adapter("merge")
-                try:
-                    print(f"[inference] active adapters: {model.active_adapters}")
-                except Exception as exc:
-                    print(f"[inference] active adapters check failed: {exc}")
+                if DEBUG_ADAPTER_LOG_LIMIT > 0:
+                    try:
+                        print(f"[inference] active adapters: {model.active_adapters}")
+                    except (AttributeError, RuntimeError) as exc:
+                        print(f"[inference] active adapters check failed: {exc}")
                 ret.append(get_pred(model, psgs=None if args.inference_method == "prag" else passages))
                 model.delete_adapter("merge")
                 model = model.unload()

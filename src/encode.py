@@ -13,6 +13,8 @@ import prompt_template
 from root_dir_path import ROOT_DIR
 from utils import get_model, load_data, adapter_stats
 
+DEBUG_ADAPTER_LOG_LIMIT = 1
+
 import numpy as np
 import random
 
@@ -177,7 +179,8 @@ def main(args):
                     continue
                 model = train(data["question"], [augment[pid]], args, model, tokenizer, 
                             init_adapter_path, save_path)
-                print(f"[encode] saved {save_path}: {adapter_stats(save_path)}")
+                if DEBUG_ADAPTER_LOG_LIMIT > 0 and pid < DEBUG_ADAPTER_LOG_LIMIT:
+                    print(f"[encode] saved {save_path}: {adapter_stats(save_path)}")
                 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ import re
 import json
 import torch
 import string
+from safetensors.torch import safe_open
 from pathlib import Path
 import numpy as np
 from collections import Counter
@@ -13,6 +14,7 @@ from root_dir_path import ROOT_DIR
 from prompt_template import get_prompt
 
 DATA_ROOT_DIR = os.path.join(ROOT_DIR, "data_aug")
+ADAPTER_STATS_MAX_ELEMENTS = 1_000_000
 
 class BaseDataset:
     @classmethod
@@ -238,19 +240,30 @@ def predict(model, tokenizer, generation_config, question, with_cot, passages = 
     return text
 
 
-def adapter_stats(adapter_path, max_entries=4):
+def adapter_stats(
+    adapter_path: Union[str, Path],
+    max_entries: int = 4,
+    max_elements: int = ADAPTER_STATS_MAX_ELEMENTS,
+) -> str:
+    """Return a short summary of adapter weights for debugging.
+
+    Output format: "<filename> size=...KB key norm=...; key norm=...".
+    Large tensors over max_elements report their shape instead of a norm.
+    """
     weight_path = Path(adapter_path) / "adapter_model.safetensors"
     if not weight_path.exists():
         return "missing adapter_model.safetensors"
     size_kb = weight_path.stat().st_size / 1024
     try:
-        from safetensors.torch import safe_open
         with safe_open(weight_path, framework="pt", device="cpu") as f:
             sample_keys = list(f.keys())[:max_entries]
             norms = []
             for key in sample_keys:
                 tensor = f.get_tensor(key)
-                norms.append(f"{key} norm={tensor.float().norm().item():.4f}")
+                if tensor.numel() > max_elements:
+                    norms.append(f"{key} shape={tuple(tensor.shape)}")
+                else:
+                    norms.append(f"{key} norm={tensor.norm().float().item():.4f}")
         return f"{weight_path.name} size={size_kb:.1f}KB " + "; ".join(norms)
-    except Exception as exc:
+    except (OSError, RuntimeError, ValueError, MemoryError) as exc:
         return f"{weight_path.name} size={size_kb:.1f}KB (safetensors read failed: {exc})"
