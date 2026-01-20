@@ -15,11 +15,30 @@ from utils import get_model, load_data
 
 import numpy as np
 import random
+from pathlib import Path
 
 seed = 42 
 torch.manual_seed(seed)
 np.random.seed(seed)
 random.seed(seed)
+
+def _adapter_stats(adapter_path, max_entries=4):
+    weight_path = Path(adapter_path) / "adapter_model.safetensors"
+    if not weight_path.exists():
+        return "missing adapter_model.safetensors"
+    size_kb = weight_path.stat().st_size / 1024
+    try:
+        from safetensors.torch import safe_open
+        with safe_open(weight_path, framework="pt", device="cpu") as f:
+            keys = f.keys()
+            sample_keys = list(keys)[:max_entries]
+            norms = []
+            for key in sample_keys:
+                tensor = f.get_tensor(key)
+                norms.append(f"{key} norm={tensor.float().norm().item():.4f}")
+        return f"{weight_path.name} size={size_kb:.1f}KB " + "; ".join(norms)
+    except Exception as exc:
+        return f"{weight_path.name} size={size_kb:.1f}KB (safetensors read failed: {exc})"
 
 
 class TrainingData(Dataset):
@@ -177,6 +196,7 @@ def main(args):
                     continue
                 model = train(data["question"], [augment[pid]], args, model, tokenizer, 
                             init_adapter_path, save_path)
+                print(f"[encode] saved {save_path}: {_adapter_stats(save_path)}")
                 
 
 if __name__ == "__main__":
