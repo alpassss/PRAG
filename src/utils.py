@@ -3,6 +3,7 @@ import re
 import json
 import torch
 import string
+from pathlib import Path
 import numpy as np
 from collections import Counter
 from typing import List, Union
@@ -235,3 +236,21 @@ def predict(model, tokenizer, generation_config, question, with_cot, passages = 
     output = output.sequences[0][input_len:]
     text = tokenizer.decode(output, skip_special_tokens=True)
     return text
+
+
+def adapter_stats(adapter_path, max_entries=4):
+    weight_path = Path(adapter_path) / "adapter_model.safetensors"
+    if not weight_path.exists():
+        return "missing adapter_model.safetensors"
+    size_kb = weight_path.stat().st_size / 1024
+    try:
+        from safetensors.torch import safe_open
+        with safe_open(weight_path, framework="pt", device="cpu") as f:
+            sample_keys = list(f.keys())[:max_entries]
+            norms = []
+            for key in sample_keys:
+                tensor = f.get_tensor(key)
+                norms.append(f"{key} norm={tensor.float().norm().item():.4f}")
+        return f"{weight_path.name} size={size_kb:.1f}KB " + "; ".join(norms)
+    except Exception as exc:
+        return f"{weight_path.name} size={size_kb:.1f}KB (safetensors read failed: {exc})"

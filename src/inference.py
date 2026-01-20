@@ -5,29 +5,9 @@ import argparse
 import torch
 from tqdm import tqdm
 from peft import PeftModel
-from pathlib import Path
-
 import prompt_template
 from root_dir_path import ROOT_DIR
-from utils import get_model, evaluate, predict, load_data, read_complete
-
-def _adapter_stats(adapter_path, max_entries=4):
-    weight_path = Path(adapter_path) / "adapter_model.safetensors"
-    if not weight_path.exists():
-        return "missing adapter_model.safetensors"
-    size_kb = weight_path.stat().st_size / 1024
-    try:
-        from safetensors.torch import safe_open
-        with safe_open(weight_path, framework="pt", device="cpu") as f:
-            keys = f.keys()
-            sample_keys = list(keys)[:max_entries]
-            norms = []
-            for key in sample_keys:
-                tensor = f.get_tensor(key)
-                norms.append(f"{key} norm={tensor.float().norm().item():.4f}")
-        return f"{weight_path.name} size={size_kb:.1f}KB " + "; ".join(norms)
-    except Exception as exc:
-        return f"{weight_path.name} size={size_kb:.1f}KB (safetensors read failed: {exc})"
+from utils import get_model, evaluate, predict, load_data, read_complete, adapter_stats
 
 def main(args):
     data_list = load_data(args.dataset, args.data_type, args.augment_model)
@@ -97,8 +77,6 @@ def main(args):
                 for pid in range(len(passages)):
                     adapter_path = os.path.join(load_adapter_path, filename, f"data_{test_id}", f"passage_{pid}")
                     if pid == 0:
-                        print(f"[inference] load {adapter_path}: {_adapter_stats(adapter_path)}")
-                    if pid == 0:
                         model = PeftModel.from_pretrained(
                             model, 
                             adapter_path,
@@ -106,9 +84,9 @@ def main(args):
                             is_trainable = False
                         )
                     else:
-                        model.load_adapter(adapter_path, adapter_name = str(pid)) 
-                        if pid < 3:
-                            print(f"[inference] load {adapter_path}: {_adapter_stats(adapter_path)}")
+                        model.load_adapter(adapter_path, adapter_name = str(pid))
+                    if pid < 3:
+                        print(f"[inference] load {adapter_path}: {adapter_stats(adapter_path)}")
                 # merge
                 lora_model = model.base_model if hasattr(model, "base_model") else model
                 lora_model.add_weighted_adapter(
