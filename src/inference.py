@@ -94,11 +94,10 @@ def main(args):
                     adapter_name = "merge", 
                     combination_type = "cat",
                 )
-                lora_model.set_adapter("merge")
                 model.set_adapter("merge")
                 ret.append(get_pred(model, psgs=None if args.inference_method == "prag" else passages))
-                lora_model.delete_adapter("merge")
-                model = lora_model.unload()
+                model.delete_adapter("merge")
+                model = model.unload()
                 torch.cuda.empty_cache()
                 gc.collect()
 
