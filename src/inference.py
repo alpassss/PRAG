@@ -87,16 +87,18 @@ def main(args):
                     else:
                         model.load_adapter(adapter_path, adapter_name = str(pid)) 
                 # merge
-                model.add_weighted_adapter(
+                lora_model = model.base_model if hasattr(model, "base_model") else model
+                lora_model.add_weighted_adapter(
                     adapters = [str(i) for i in range(len(passages))], 
                     weights = [1] * len(passages),
                     adapter_name = "merge", 
                     combination_type = "cat",
                 )
+                lora_model.set_adapter("merge")
                 model.set_adapter("merge")
                 ret.append(get_pred(model, psgs=None if args.inference_method == "prag" else passages))
-                model.delete_adapter("merge")
-                model = model.unload()
+                lora_model.delete_adapter("merge")
+                model = lora_model.unload()
                 torch.cuda.empty_cache()
                 gc.collect()
 
