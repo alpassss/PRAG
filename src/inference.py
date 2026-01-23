@@ -19,6 +19,40 @@ DEBUG_COMPARE_TOP_K_DEFAULT = 20
 DEBUG_LOGITS_DIFF_LIMIT_DEFAULT = 3
 LOGITS_DIFF_EPSILON = 1e-12  # avoid divide-by-zero in diff ratio
 DEBUG_ADAPTER_STATUS_LIMIT_DEFAULT = 3
+DEBUG_ADAPTER_WEIGHTS_LIMIT_DEFAULT = 3
+
+def log_adapter_weights(model, adapter_name, sample_limit):
+    """Log basic adapter weight norms for a named adapter (debug only).
+
+    Args:
+        model: Model with PEFT adapters.
+        adapter_name: Adapter name to inspect.
+        sample_limit: Number of layer norm samples to print.
+    """
+    total_layers = 0
+    zero_layers = 0
+    sample_norms = []
+    for module in model.modules():
+        if hasattr(module, "lora_A") and adapter_name in module.lora_A and adapter_name in module.lora_B:
+            total_layers += 1
+            norm_a = module.lora_A[adapter_name].weight.detach().float().norm().item()
+            norm_b = module.lora_B[adapter_name].weight.detach().float().norm().item()
+            if norm_a == 0.0 and norm_b == 0.0:
+                zero_layers += 1
+            if len(sample_norms) < sample_limit:
+                sample_norms.append(f"A={norm_a:.6f} B={norm_b:.6f}")
+            if len(sample_norms) >= sample_limit:
+                # sample is based on module iteration order
+                break
+    if total_layers == 0:
+        print(f"[adapter-weights] adapter={adapter_name} layers=0")
+    else:
+        sample_text = "; ".join(sample_norms)  # first N layers encountered in iteration order
+        print(
+            "[adapter-weights] "
+            f"adapter={adapter_name} layers={total_layers} zero_layers={zero_layers} "
+            f"samples={sample_text}"
+        )
 
 def main(args):
     data_list = load_data(args.dataset, args.data_type, args.augment_model)
@@ -60,6 +94,8 @@ def main(args):
     logits_diff_limit = args.debug_logits_diff_limit
     debug_adapter_status = args.debug_adapter_status
     adapter_status_limit = args.debug_adapter_status_limit
+    debug_adapter_weights = args.debug_adapter_weights
+    adapter_weights_limit = args.debug_adapter_weights_limit
     def log_compare(label, text):
         print(f"[compare] {label}: {text[:DEBUG_OUTPUT_CHAR_LIMIT]}")
     def log_adapter_status(model):
@@ -103,6 +139,7 @@ def main(args):
         compare_count = 0
         logits_count = 0
         adapter_status_count = 0
+        adapter_weights_count = 0
         filename = filename.split(".")[0]
         print(f"### Solving {filename} ###")
         output_dir = os.path.join(output_root_dir, filename)
@@ -209,6 +246,10 @@ def main(args):
                 if debug_adapter_status and adapter_status_count < adapter_status_limit:
                     log_adapter_status(model)
                     adapter_status_count += 1
+                if debug_adapter_weights and adapter_weights_count < adapter_weights_limit:
+                    # merge adapter reflects combined LoRA for this inference
+                    log_adapter_weights(model, "merge", args.debug_adapter_weights_sample_limit)
+                    adapter_weights_count += 1
                 if logits_diff and logits_count < logits_diff_limit:
                     # debug-only extra forward passes; this is intentionally expensive
                     with model.disable_adapter():
@@ -298,6 +339,23 @@ if __name__ == "__main__":
         type=int,
         default=DEBUG_ADAPTER_STATUS_LIMIT_DEFAULT,
         help="Number of adapter status logs to print.",
+    )
+    parser.add_argument(
+        "--debug_adapter_weights",
+        action="store_true",
+        help="Debug-only: print adapter weight norms for the merge adapter.",
+    )
+    parser.add_argument(
+        "--debug_adapter_weights_limit",
+        type=int,
+        default=DEBUG_ADAPTER_WEIGHTS_LIMIT_DEFAULT,
+        help="Number of adapter weight logs to print.",
+    )
+    parser.add_argument(
+        "--debug_adapter_weights_sample_limit",
+        type=int,
+        default=DEBUG_ADAPTER_WEIGHTS_LIMIT_DEFAULT,
+        help="Number of adapter layer samples to report per log.",
     )
     # LoRA
     parser.add_argument("--lora_rank", type=int)
