@@ -14,6 +14,7 @@ from root_dir_path import ROOT_DIR
 from utils import get_model, load_data, adapter_stats
 
 DEBUG_ADAPTER_LOG_LIMIT = 1
+DEBUG_TRAINABLE_LOG_LIMIT_DEFAULT = 1
 
 import numpy as np
 import random
@@ -93,8 +94,32 @@ def get_train_data(aug_model, augments, tokenizer, args):
     return prompt_ids
 
 
+def log_trainable_parameters(model):
+    """Log trainable parameter summary for LoRA debugging.
+
+    Args:
+        model: LoRA model instance to inspect.
+    """
+    if hasattr(model, "print_trainable_parameters"):
+        print("[encode] trainable parameters:")
+        model.print_trainable_parameters()
+    else:
+        print("[encode] trainable parameters unavailable on this model.")
+
 def train(question, augments, args, model, tokenizer, 
-          init_adapter_path, save_path):
+          init_adapter_path, save_path, debug_trainable=False):
+    """Train LoRA adapter for a single passage and optionally log trainable params.
+
+    Args:
+        question: Question text.
+        augments: Augmented passage list.
+        args: Parsed CLI args.
+        model: Base model to adapt.
+        tokenizer: Tokenizer instance.
+        init_adapter_path: Path to base LoRA weights.
+        save_path: Output directory for adapter.
+        debug_trainable: When True, print trainable parameter summary.
+    """
     prompt_ids = get_train_data(args.augment_model, augments, tokenizer, args)
     train_data = TrainingData(prompt_ids, tokenizer)
     train_dataloader = torch.utils.data.DataLoader(
@@ -104,6 +129,8 @@ def train(question, augments, args, model, tokenizer,
         shuffle=False,
     )
     model = PeftModel.from_pretrained(model, init_adapter_path, is_trainable=True)
+    if debug_trainable:
+        log_trainable_parameters(model)
     model.is_parallelizable = True
     model.model_parallel = True
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
@@ -177,8 +204,9 @@ def main(args):
                 save_path = os.path.join(output_dir, f"data_{did}", f"passage_{pid}")
                 if os.path.exists(os.path.join(save_path, "adapter_model.safetensors")):
                     continue
+                debug_trainable = args.debug_trainable and pid < args.debug_trainable_limit
                 model = train(data["question"], [augment[pid]], args, model, tokenizer, 
-                            init_adapter_path, save_path)
+                            init_adapter_path, save_path, debug_trainable=debug_trainable)
                 if DEBUG_ADAPTER_LOG_LIMIT > 0 and pid < DEBUG_ADAPTER_LOG_LIMIT:
                     print(f"[encode] saved {save_path}: {adapter_stats(save_path)}")
                 
@@ -195,6 +223,8 @@ if __name__ == "__main__":
     parser.add_argument("--per_device_train_batch_size", type=int, default=1)
     parser.add_argument("--num_train_epochs", type=int, default=3)
     parser.add_argument("--learning_rate", type=float, default=3e-4)
+    parser.add_argument("--debug_trainable", action="store_true")
+    parser.add_argument("--debug_trainable_limit", type=int, default=DEBUG_TRAINABLE_LOG_LIMIT_DEFAULT)
     # LoRA
     parser.add_argument("--lora_rank", type=int, default=None)
     parser.add_argument("--lora_alpha", type=int, default=None)
