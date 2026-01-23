@@ -16,6 +16,7 @@ DEBUG_COMPARE_LIMIT_DEFAULT = 3
 DEBUG_COMPARE_TEMPERATURE_DEFAULT = 0.7
 DEBUG_COMPARE_TOP_P_DEFAULT = 0.8
 DEBUG_COMPARE_TOP_K_DEFAULT = 20
+DEBUG_LOGITS_DIFF_LIMIT_DEFAULT = 3
 
 def main(args):
     data_list = load_data(args.dataset, args.data_type, args.augment_model)
@@ -53,6 +54,8 @@ def main(args):
     compare_sampling = args.debug_compare_sampling
     compare_limit = args.debug_compare_limit
     should_compare_sampling = compare_outputs and compare_sampling
+    logits_diff = args.debug_logits_diff
+    logits_diff_limit = args.debug_logits_diff_limit
     def log_compare(label, text):
         print(f"[compare] {label}: {text[:DEBUG_OUTPUT_CHAR_LIMIT]}")
     if compare_outputs:
@@ -62,6 +65,8 @@ def main(args):
             print("[compare] sampling debug enabled; outputs are non-deterministic.")
     if args.use_sampling_eval:
         print("[sampling] sampling evaluation enabled; metrics will be based on sampled outputs.")
+    if logits_diff:
+        print("[logits] debug output enabled; extra forward passes will slow down.")
     sample_generation_config = None
     needs_sampling_config = compare_sampling or args.use_sampling_eval
     if needs_sampling_config:
@@ -74,6 +79,7 @@ def main(args):
         })
     for filename, fulldata in data_list:
         compare_count = 0
+        logits_count = 0
         filename = filename.split(".")[0]
         print(f"### Solving {filename} ###")
         output_dir = os.path.join(output_root_dir, filename)
@@ -106,6 +112,30 @@ def main(args):
                 }
                 pred.update(evaluate(text, answer, args.with_cot))
                 return pred
+
+            def get_first_step_logits(model, tokenizer, question, psgs, with_cot):
+                """Return logits for the next token after the prompt (debug only).
+
+                Args:
+                    model: The model to evaluate.
+                    tokenizer: Tokenizer for prompt construction.
+                    question: Question text.
+                    psgs: Optional passages (None for parametric RAG/prag).
+                    with_cot: Whether to include CoT in the prompt.
+
+                Returns:
+                    torch.Tensor: Logits for the next token after the prompt.
+                """
+                input_ids = prompt_template.get_prompt(
+                    tokenizer,
+                    question,
+                    passages=psgs,
+                    with_cot=with_cot,
+                )
+                input_ids = torch.as_tensor(input_ids, device=model.device).unsqueeze(0)
+                with torch.no_grad():
+                    outputs = model(input_ids, attention_mask=torch.ones_like(input_ids))
+                return outputs.logits[0, -1].to(torch.float32)
             
             def get_sample_pred(model, psgs):
                 if sample_generation_config is None:
@@ -153,6 +183,17 @@ def main(args):
                         print(f"[inference] active adapters: {model.active_adapters}")
                     except (AttributeError, RuntimeError) as exc:
                         print(f"[inference] active adapters check failed: {exc}")
+                if logits_diff and logits_count < logits_diff_limit:
+                    # debug-only extra forward passes; this is intentionally expensive
+                    with model.disable_adapter():
+                        base_logits = get_first_step_logits(model, tokenizer, question, psgs, args.with_cot)
+                    merge_logits = get_first_step_logits(model, tokenizer, question, psgs, args.with_cot)
+                    diff = merge_logits - base_logits  # float32 for consistent stats
+                    print(
+                        "[logits] max|diff|="
+                        f"{diff.abs().max().item():.6f} mean|diff|={diff.abs().mean().item():.6f}"
+                    )
+                    logits_count += 1
                 pred = get_sample_pred(model, psgs=psgs) if args.use_sampling_eval else get_pred(model, psgs=psgs)
                 if compare_outputs and compare_count < compare_limit:
                     with model.disable_adapter():
@@ -211,6 +252,12 @@ if __name__ == "__main__":
     parser.add_argument("--debug_compare_top_p", type=float, default=DEBUG_COMPARE_TOP_P_DEFAULT)
     parser.add_argument("--debug_compare_top_k", type=int, default=DEBUG_COMPARE_TOP_K_DEFAULT)
     parser.add_argument("--use_sampling_eval", action="store_true")
+    parser.add_argument(
+        "--debug_logits_diff",
+        action="store_true",
+        help="Debug-only: computes logits diff with extra forward passes (slow).",
+    )
+    parser.add_argument("--debug_logits_diff_limit", type=int, default=DEBUG_LOGITS_DIFF_LIMIT_DEFAULT)
     # LoRA
     parser.add_argument("--lora_rank", type=int)
     parser.add_argument("--lora_alpha", type=int)
