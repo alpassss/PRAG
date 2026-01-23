@@ -10,8 +10,8 @@ from root_dir_path import ROOT_DIR
 from utils import get_model, evaluate, predict, load_data, read_complete, adapter_stats
 
 DEBUG_ADAPTER_LOG_LIMIT = 3
-DEBUG_COMPARE_OUTPUTS = True
 DEBUG_OUTPUT_CHAR_LIMIT = 200
+DEBUG_COMPARE_LIMIT_DEFAULT = 3
 
 def main(args):
     data_list = load_data(args.dataset, args.data_type, args.augment_model)
@@ -42,7 +42,14 @@ def main(args):
         f"aug_model={args.augment_model}",
         args.inference_method, 
     )
+    compare_outputs = args.debug_compare_outputs
+    compare_limit = args.debug_compare_limit
+    def log_compare(label, text):
+        print(f"[compare] {label}: {text[:DEBUG_OUTPUT_CHAR_LIMIT]}")
+    if compare_outputs:
+        print("[compare] debug output enabled; extra base inference will slow down.")
     for filename, fulldata in data_list:
+        compare_count = 0
         filename = filename.split(".")[0]
         print(f"### Solving {filename} ###")
         output_dir = os.path.join(output_root_dir, filename)
@@ -75,10 +82,14 @@ def main(args):
                 pred.update(evaluate(text, answer, args.with_cot))
                 return pred
 
+            psgs = None if args.inference_method == "prag" else passages
             if args.inference_method == "icl":
-                pred = get_pred(model, psgs=passages)
-                if DEBUG_COMPARE_OUTPUTS:
-                    print(f"[compare] icl: {pred['text'][:DEBUG_OUTPUT_CHAR_LIMIT]}")
+                pred = get_pred(model, psgs=psgs)
+                if compare_outputs and compare_count < compare_limit:
+                    log_compare("question", question)
+                    pred_text = pred.get("text", "")
+                    log_compare("icl", pred_text)
+                    compare_count += 1
                 ret.append(pred)
             else:
                 for pid in range(len(passages)):
@@ -109,12 +120,17 @@ def main(args):
                         print(f"[inference] active adapters: {model.active_adapters}")
                     except (AttributeError, RuntimeError) as exc:
                         print(f"[inference] active adapters check failed: {exc}")
-                pred = get_pred(model, psgs=None if args.inference_method == "prag" else passages)
-                if DEBUG_COMPARE_OUTPUTS:
+                pred = get_pred(model, psgs=psgs)
+                if compare_outputs and compare_count < compare_limit:
                     with model.disable_adapter():
-                        base_pred = get_pred(model, psgs=None if args.inference_method == "prag" else passages)
-                    print(f"[compare] merge: {pred['text'][:DEBUG_OUTPUT_CHAR_LIMIT]}")
-                    print(f"[compare] base: {base_pred['text'][:DEBUG_OUTPUT_CHAR_LIMIT]}")
+                        base_pred = get_pred(model, psgs=psgs)
+                    # debug-only extra generation; this is intentionally expensive
+                    pred_text = pred.get("text", "")
+                    base_text = base_pred.get("text", "")
+                    log_compare("question", question)
+                    log_compare("combine(merge)", pred_text)
+                    log_compare("icl(no_adapter)", base_text)
+                    compare_count += 1
                 ret.append(pred)
                 model.delete_adapter("merge")
                 model = model.unload()
@@ -148,6 +164,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_train_epochs", type=int, required=True)
     parser.add_argument("--learning_rate", type=float, default=3e-4)
     parser.add_argument("--inference_method", type=str, required=True, choices=["icl", "prag", "combine"])
+    parser.add_argument("--debug_compare_outputs", action="store_true")
+    parser.add_argument("--debug_compare_limit", type=int, default=DEBUG_COMPARE_LIMIT_DEFAULT)
     # LoRA
     parser.add_argument("--lora_rank", type=int)
     parser.add_argument("--lora_alpha", type=int)
