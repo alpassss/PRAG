@@ -36,6 +36,9 @@ def main(args):
         f"lr={args.learning_rate}_epoch={args.num_train_epochs}_{cot_name}",
         f"aug_model={args.augment_model}",
     )
+    output_dir_suffix = args.inference_method
+    if args.use_sampling_eval:
+        output_dir_suffix = f"{output_dir_suffix}_sample"
     output_root_dir = os.path.join(
         ROOT_DIR, 
         "output",
@@ -44,7 +47,7 @@ def main(args):
         args.dataset,
         f"lr={args.learning_rate}_epoch={args.num_train_epochs}_{cot_name}",
         f"aug_model={args.augment_model}",
-        args.inference_method, 
+        output_dir_suffix, 
     )
     compare_outputs = args.debug_compare_outputs
     compare_sampling = args.debug_compare_sampling
@@ -57,10 +60,11 @@ def main(args):
         if compare_sampling:
             print("[compare] sampling comparisons differ from greedy decoding due to stochastic token selection.")
             print("[compare] sampling debug enabled; outputs are non-deterministic.")
-            if args.use_sampling_eval:
-                print("[compare] sampling evaluation enabled; metrics will be based on sampled outputs.")
+    if args.use_sampling_eval:
+        print("[sampling] sampling evaluation enabled; metrics will be based on sampled outputs.")
     sample_generation_config = None
-    if compare_sampling:
+    needs_sampling_config = compare_sampling or args.use_sampling_eval
+    if needs_sampling_config:
         sample_generation_config = copy.deepcopy(generation_config)
         sample_generation_config.update({
             "do_sample": True,
