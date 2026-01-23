@@ -18,6 +18,7 @@ DEBUG_COMPARE_TOP_P_DEFAULT = 0.8
 DEBUG_COMPARE_TOP_K_DEFAULT = 20
 DEBUG_LOGITS_DIFF_LIMIT_DEFAULT = 3
 LOGITS_DIFF_EPSILON = 1e-12  # avoid divide-by-zero in diff ratio
+DEBUG_ADAPTER_STATUS_LIMIT_DEFAULT = 3
 
 def main(args):
     data_list = load_data(args.dataset, args.data_type, args.augment_model)
@@ -57,8 +58,28 @@ def main(args):
     should_compare_sampling = compare_outputs and compare_sampling
     logits_diff = args.debug_logits_diff
     logits_diff_limit = args.debug_logits_diff_limit
+    debug_adapter_status = args.debug_adapter_status
+    adapter_status_limit = args.debug_adapter_status_limit
     def log_compare(label, text):
         print(f"[compare] {label}: {text[:DEBUG_OUTPUT_CHAR_LIMIT]}")
+    def log_adapter_status(model):
+        """Log PEFT adapter status (enabled/active_adapters/num_adapter_layers) if available."""
+        if not hasattr(model, "get_model_status"):
+            print("[adapter-status] get_model_status not available on this model.")
+            return
+        try:
+            status = model.get_model_status()
+            if status is None:
+                print("[adapter-status] status is None.")
+                return
+            print(
+                "[adapter-status] "
+                f"enabled={getattr(status, 'enabled', 'n/a')} "
+                f"active_adapters={getattr(status, 'active_adapters', 'n/a')} "
+                f"num_adapter_layers={getattr(status, 'num_adapter_layers', 'n/a')}"
+            )
+        except (AttributeError, RuntimeError) as exc:
+            print(f"[adapter-status] status check failed: {exc}")
     if compare_outputs:
         print("[compare] debug output enabled; extra base inference will slow down.")
         if compare_sampling:
@@ -81,6 +102,7 @@ def main(args):
     for filename, fulldata in data_list:
         compare_count = 0
         logits_count = 0
+        adapter_status_count = 0
         filename = filename.split(".")[0]
         print(f"### Solving {filename} ###")
         output_dir = os.path.join(output_root_dir, filename)
@@ -184,6 +206,9 @@ def main(args):
                         print(f"[inference] active adapters: {model.active_adapters}")
                     except (AttributeError, RuntimeError) as exc:
                         print(f"[inference] active adapters check failed: {exc}")
+                if debug_adapter_status and adapter_status_count < adapter_status_limit:
+                    log_adapter_status(model)
+                    adapter_status_count += 1
                 if logits_diff and logits_count < logits_diff_limit:
                     # debug-only extra forward passes; this is intentionally expensive
                     with model.disable_adapter():
@@ -263,6 +288,17 @@ if __name__ == "__main__":
         help="Debug-only: computes logits diff with extra forward passes (slow).",
     )
     parser.add_argument("--debug_logits_diff_limit", type=int, default=DEBUG_LOGITS_DIFF_LIMIT_DEFAULT)
+    parser.add_argument(
+        "--debug_adapter_status",
+        action="store_true",
+        help="Debug-only: print adapter layer status to verify LoRA attachment.",
+    )
+    parser.add_argument(
+        "--debug_adapter_status_limit",
+        type=int,
+        default=DEBUG_ADAPTER_STATUS_LIMIT_DEFAULT,
+        help="Number of adapter status logs to print.",
+    )
     # LoRA
     parser.add_argument("--lora_rank", type=int)
     parser.add_argument("--lora_alpha", type=int)
