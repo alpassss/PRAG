@@ -55,7 +55,10 @@ def main(args):
     if compare_outputs:
         print("[compare] debug output enabled; extra base inference will slow down.")
         if compare_sampling:
+            print("[compare] sampling comparisons differ from greedy decoding due to stochastic token selection.")
             print("[compare] sampling debug enabled; outputs are non-deterministic.")
+            if args.use_sampling_eval:
+                print("[compare] sampling evaluation enabled; metrics will be based on sampled outputs.")
     sample_generation_config = None
     if compare_sampling:
         sample_generation_config = copy.deepcopy(generation_config)
@@ -102,12 +105,12 @@ def main(args):
             
             def get_sample_pred(model, psgs):
                 if sample_generation_config is None:
-                    return get_pred(model, psgs)
+                    return get_pred(model, psgs=psgs)
                 return get_pred(model, psgs, generation_override=sample_generation_config)
 
             psgs = None if args.inference_method == "prag" else passages
             if args.inference_method == "icl":
-                pred = get_pred(model, psgs=psgs)
+                pred = get_sample_pred(model, psgs=psgs) if args.use_sampling_eval else get_pred(model, psgs=psgs)
                 if compare_outputs and compare_count < compare_limit:
                     log_compare("question", question)
                     pred_text = pred.get("text", "")
@@ -146,7 +149,7 @@ def main(args):
                         print(f"[inference] active adapters: {model.active_adapters}")
                     except (AttributeError, RuntimeError) as exc:
                         print(f"[inference] active adapters check failed: {exc}")
-                pred = get_pred(model, psgs=psgs)
+                pred = get_sample_pred(model, psgs=psgs) if args.use_sampling_eval else get_pred(model, psgs=psgs)
                 if compare_outputs and compare_count < compare_limit:
                     with model.disable_adapter():
                         base_pred = get_pred(model, psgs=psgs)
@@ -203,6 +206,7 @@ if __name__ == "__main__":
     parser.add_argument("--debug_compare_temperature", type=float, default=DEBUG_COMPARE_TEMPERATURE_DEFAULT)
     parser.add_argument("--debug_compare_top_p", type=float, default=DEBUG_COMPARE_TOP_P_DEFAULT)
     parser.add_argument("--debug_compare_top_k", type=int, default=DEBUG_COMPARE_TOP_K_DEFAULT)
+    parser.add_argument("--use_sampling_eval", action="store_true")
     # LoRA
     parser.add_argument("--lora_rank", type=int)
     parser.add_argument("--lora_alpha", type=int)
