@@ -10,6 +10,8 @@ from root_dir_path import ROOT_DIR
 from utils import get_model, evaluate, predict, load_data, read_complete, adapter_stats
 
 DEBUG_ADAPTER_LOG_LIMIT = 3
+DEBUG_COMPARE_OUTPUTS = True
+DEBUG_OUTPUT_CHAR_LIMIT = 200
 
 def main(args):
     data_list = load_data(args.dataset, args.data_type, args.augment_model)
@@ -74,7 +76,10 @@ def main(args):
                 return pred
 
             if args.inference_method == "icl":
-                ret.append(get_pred(model, psgs=passages))
+                pred = get_pred(model, psgs=passages)
+                if DEBUG_COMPARE_OUTPUTS:
+                    print(f"[compare] icl: {pred['text'][:DEBUG_OUTPUT_CHAR_LIMIT]}")
+                ret.append(pred)
             else:
                 for pid in range(len(passages)):
                     adapter_path = os.path.join(load_adapter_path, filename, f"data_{test_id}", f"passage_{pid}")
@@ -104,7 +109,13 @@ def main(args):
                         print(f"[inference] active adapters: {model.active_adapters}")
                     except (AttributeError, RuntimeError) as exc:
                         print(f"[inference] active adapters check failed: {exc}")
-                ret.append(get_pred(model, psgs=None if args.inference_method == "prag" else passages))
+                pred = get_pred(model, psgs=None if args.inference_method == "prag" else passages)
+                if DEBUG_COMPARE_OUTPUTS:
+                    with model.disable_adapter():
+                        base_pred = get_pred(model, psgs=None if args.inference_method == "prag" else passages)
+                    print(f"[compare] merge: {pred['text'][:DEBUG_OUTPUT_CHAR_LIMIT]}")
+                    print(f"[compare] base: {base_pred['text'][:DEBUG_OUTPUT_CHAR_LIMIT]}")
+                ret.append(pred)
                 model.delete_adapter("merge")
                 model = model.unload()
                 torch.cuda.empty_cache()
