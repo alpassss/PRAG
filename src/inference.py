@@ -1,6 +1,7 @@
 import os
 import gc
 import json
+import copy
 import argparse
 import torch
 from tqdm import tqdm
@@ -12,6 +13,9 @@ from utils import get_model, evaluate, predict, load_data, read_complete, adapte
 DEBUG_ADAPTER_LOG_LIMIT = 3
 DEBUG_OUTPUT_CHAR_LIMIT = 200
 DEBUG_COMPARE_LIMIT_DEFAULT = 3
+DEBUG_COMPARE_TEMPERATURE_DEFAULT = 0.7
+DEBUG_COMPARE_TOP_P_DEFAULT = 0.8
+DEBUG_COMPARE_TOP_K_DEFAULT = 20
 
 def main(args):
     data_list = load_data(args.dataset, args.data_type, args.augment_model)
@@ -43,11 +47,24 @@ def main(args):
         args.inference_method, 
     )
     compare_outputs = args.debug_compare_outputs
+    compare_sampling = args.debug_compare_sampling
     compare_limit = args.debug_compare_limit
+    should_compare_sampling = compare_outputs and compare_sampling
     def log_compare(label, text):
         print(f"[compare] {label}: {text[:DEBUG_OUTPUT_CHAR_LIMIT]}")
     if compare_outputs:
         print("[compare] debug output enabled; extra base inference will slow down.")
+        if compare_sampling:
+            print("[compare] sampling debug enabled; outputs are non-deterministic.")
+    sample_generation_config = None
+    if compare_sampling:
+        sample_generation_config = copy.deepcopy(generation_config)
+        sample_generation_config.update({
+            "do_sample": True,
+            "temperature": args.debug_compare_temperature,
+            "top_p": args.debug_compare_top_p,
+            "top_k": args.debug_compare_top_k,
+        })
     for filename, fulldata in data_list:
         compare_count = 0
         filename = filename.split(".")[0]
@@ -69,8 +86,9 @@ def main(args):
             passages = data["passages"]
             answer = data["answer"]
 
-            def get_pred(model, psgs):
-                text = predict(model, tokenizer, generation_config, 
+            def get_pred(model, psgs, generation_override=None):
+                config = generation_config if generation_override is None else generation_override
+                text = predict(model, tokenizer, config, 
                                         question, with_cot=args.with_cot, 
                                         passages=psgs)
                 pred = {
@@ -81,6 +99,11 @@ def main(args):
                 }
                 pred.update(evaluate(text, answer, args.with_cot))
                 return pred
+            
+            def get_sample_pred(model, psgs):
+                if sample_generation_config is None:
+                    return get_pred(model, psgs)
+                return get_pred(model, psgs, generation_override=sample_generation_config)
 
             psgs = None if args.inference_method == "prag" else passages
             if args.inference_method == "icl":
@@ -89,6 +112,9 @@ def main(args):
                     log_compare("question", question)
                     pred_text = pred.get("text", "")
                     log_compare("icl", pred_text)
+                    if should_compare_sampling:
+                        sample_pred = get_sample_pred(model, psgs=psgs)
+                        log_compare("icl(sample)", sample_pred.get("text", ""))
                     compare_count += 1
                 ret.append(pred)
             else:
@@ -130,6 +156,13 @@ def main(args):
                     log_compare("question", question)
                     log_compare("combine(merge)", pred_text)
                     log_compare("icl(no_adapter)", base_text)
+                    if should_compare_sampling:
+                        sample_pred = get_sample_pred(model, psgs=psgs)
+                        with model.disable_adapter():
+                            sample_base_pred = get_sample_pred(model, psgs=psgs)
+                        # debug-only extra generation; this is intentionally expensive
+                        log_compare("combine(merge,sample)", sample_pred.get("text", ""))
+                        log_compare("icl(no_adapter,sample)", sample_base_pred.get("text", ""))
                     compare_count += 1
                 ret.append(pred)
                 model.delete_adapter("merge")
@@ -166,6 +199,10 @@ if __name__ == "__main__":
     parser.add_argument("--inference_method", type=str, required=True, choices=["icl", "prag", "combine"])
     parser.add_argument("--debug_compare_outputs", action="store_true")
     parser.add_argument("--debug_compare_limit", type=int, default=DEBUG_COMPARE_LIMIT_DEFAULT)
+    parser.add_argument("--debug_compare_sampling", action="store_true")
+    parser.add_argument("--debug_compare_temperature", type=float, default=DEBUG_COMPARE_TEMPERATURE_DEFAULT)
+    parser.add_argument("--debug_compare_top_p", type=float, default=DEBUG_COMPARE_TOP_P_DEFAULT)
+    parser.add_argument("--debug_compare_top_k", type=int, default=DEBUG_COMPARE_TOP_K_DEFAULT)
     # LoRA
     parser.add_argument("--lora_rank", type=int)
     parser.add_argument("--lora_alpha", type=int)
