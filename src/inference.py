@@ -17,6 +17,7 @@ DEBUG_COMPARE_TEMPERATURE_DEFAULT = 0.7
 DEBUG_COMPARE_TOP_P_DEFAULT = 0.8
 DEBUG_COMPARE_TOP_K_DEFAULT = 20
 DEBUG_LOGITS_DIFF_LIMIT_DEFAULT = 3
+LOGITS_DIFF_EPSILON = 1e-12  # avoid divide-by-zero in diff ratio
 
 def main(args):
     data_list = load_data(args.dataset, args.data_type, args.augment_model)
@@ -189,9 +190,13 @@ def main(args):
                         base_logits = get_first_step_logits(model, tokenizer, question, psgs, args.with_cot)
                     merge_logits = get_first_step_logits(model, tokenizer, question, psgs, args.with_cot)
                     diff = merge_logits - base_logits  # float32 for consistent stats
+                    base_abs_mean = base_logits.abs().mean().item()
+                    diff_abs = diff.abs()
+                    diff_abs_mean = diff_abs.mean().item()
                     print(
                         "[logits] max|diff|="
-                        f"{diff.abs().max().item():.6f} mean|diff|={diff.abs().mean().item():.6f}"
+                        f"{diff_abs.max().item():.6f} mean|diff|={diff_abs_mean:.6f} "
+                        f"mean|diff|/mean|base|={diff_abs_mean / (base_abs_mean + LOGITS_DIFF_EPSILON):.6e}"
                     )
                     logits_count += 1
                 pred = get_sample_pred(model, psgs=psgs) if args.use_sampling_eval else get_pred(model, psgs=psgs)
