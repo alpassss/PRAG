@@ -248,7 +248,7 @@ def main(args):
                     adapters = [str(i) for i in range(len(passages))], 
                     weights = [1] * len(passages),
                     adapter_name = "merge", 
-                    combination_type = "cat",
+                    combination_type = "linear",
                 )
                 model.set_adapter("merge")
                 if DEBUG_ADAPTER_LOG_LIMIT > 0:
