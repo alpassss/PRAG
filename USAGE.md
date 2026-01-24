@@ -34,7 +34,7 @@ This creates the `data_aug/` directory with augmented data for each dataset.
 
 ## Step 3: Train Document Adapters (Encode Step)
 
-Train LoRA adapters for each passage in the dataset. Each passage gets its own adapter that encodes its knowledge.
+Train LoRA adapters for each passage in the dataset. Each passage gets its own adapter that encodes its knowledge into model parameters.
 
 ### Example: HotpotQA with LLaMA-3-8B
 
@@ -69,12 +69,13 @@ The trained adapters are saved in the `offline/` directory.
 
 ## Step 4: Run Inference
 
-There are three inference methods:
+There are three inference methods. **They should produce different results:**
 
 ### 1. ICL Mode (Traditional RAG)
 
 - **Description**: Uses retrieved passages in the prompt, no adapters
-- **How it works**: Base model + passages in context
+- **Prompt**: Contains passages for the model to reference
+- **Model**: Base model without any adapter modifications
 
 ```bash
 python src/inference.py \
@@ -90,10 +91,11 @@ python src/inference.py \
     --with_cot
 ```
 
-### 2. PRAG Mode (Parametric RAG)
+### 2. PRAG Mode (Parametric RAG) 
 
-- **Description**: Merges trained adapters into model, no passages in prompt
-- **How it works**: Adapters contain encoded knowledge → merged into model weights
+- **Description**: Merges trained adapters into model, **NO passages in prompt**
+- **Prompt**: Simple question prompt without passages
+- **Model**: Base model with adapter weights merged in (knowledge encoded in parameters)
 
 ```bash
 python src/inference.py \
@@ -112,7 +114,8 @@ python src/inference.py \
 ### 3. Combine Mode
 
 - **Description**: Uses both adapters AND passages in prompt
-- **How it works**: Merged adapters + passages in context
+- **Prompt**: Contains passages for the model to reference
+- **Model**: Base model with adapter weights merged in
 
 ```bash
 python src/inference.py \
@@ -127,6 +130,20 @@ python src/inference.py \
     --inference_method combine \
     --with_cot
 ```
+
+## Key Differences Between Modes
+
+| Mode | Adapters | Passages in Prompt | Knowledge Source |
+|------|----------|-------------------|------------------|
+| ICL | ❌ None | ✅ Yes | Passages only |
+| PRAG | ✅ Merged | ❌ No | Parameters only |
+| Combine | ✅ Merged | ✅ Yes | Both |
+
+**Why results should differ:**
+
+1. **ICL vs PRAG**: Different prompts (with/without passages) and different models (base vs adapted)
+2. **ICL vs Combine**: Same passages in prompt, but Combine has adapted model parameters
+3. **PRAG vs Combine**: Same adapted model, but Combine also has passages in prompt
 
 ## Expected Output Structure
 
@@ -159,15 +176,14 @@ output/
 - `popqa`
 - `complexwebquestions`
 
-## Key Differences Between Modes
-
-| Mode | Adapters Merged? | Passages in Prompt? | Use Case |
-|------|-----------------|---------------------|----------|
-| ICL | No | Yes | Baseline RAG |
-| PRAG | Yes | No | Knowledge in parameters |
-| Combine | Yes | Yes | Best of both worlds |
-
 ## Troubleshooting
+
+### Results are identical across modes
+
+Make sure:
+1. Adapters were trained properly (check `offline/` directory)
+2. Using correct paths that match encode step parameters
+3. Clear old output files before re-running
 
 ### Out of Memory
 

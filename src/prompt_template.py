@@ -5,15 +5,26 @@ current_dataset = None
 fewshot = None
 fewshot_path = os.path.join(ROOT_DIR, "src", "fewshot")
 
-USER_PROMPT = "You should answer the question by referring to the knowledge provided below and integrating your own knowledge.\n\
+# Prompt template when passages ARE provided (for ICL and Combine modes)
+USER_PROMPT_WITH_PASSAGES = "You should answer the question by referring to the knowledge provided below and integrating your own knowledge.\n\
 {passages}\n\n\
 Question: {question}"
 
-USER_PROMPT_WITH_COT = "You should reference the knowledge provided below and combine it with your own knowledge to answer the question. Please follow the format of the example I provided above.\n\
+# Prompt template when NO passages are provided (for PRAG mode - knowledge is in parameters)
+USER_PROMPT_NO_PASSAGES = "Answer the following question using your knowledge.\n\n\
+Question: {question}"
+
+USER_PROMPT_WITH_COT_WITH_PASSAGES = "You should reference the knowledge provided below and combine it with your own knowledge to answer the question. Please follow the format of the example I provided above.\n\
 Here are some examples about how to answer the questions.\n\
 {fewshot}\
 Here are some reference.\n\
 {passages}\n\n\
+Let's think step by step. Answer the questions in the same format as above.\n\
+Question: {question}"
+
+USER_PROMPT_WITH_COT_NO_PASSAGES = "Answer the following question using your knowledge. Please follow the format of the example I provided above.\n\
+Here are some examples about how to answer the questions.\n\
+{fewshot}\
 Let's think step by step. Answer the questions in the same format as above.\n\
 Question: {question}"
 
@@ -58,16 +69,30 @@ def get_fewshot(dataset):
 
 def get_prompt(tokenizer, question, passages=None, answer=None, with_cot=False):
     question, passages, answer = _get_prompt(question, passages, answer)
+    
+    # Build contexts string from passages if provided
     contexts = ""
     if passages:
         for pid, psg in enumerate(passages):
             contexts += f"Passage {pid+1}: {psg}\n"
+    
+    # Select appropriate prompt template based on whether passages are provided
+    has_passages = passages is not None and len(passages) > 0
+    
     if not with_cot:
-        user_content = USER_PROMPT.format(question=question, passages=contexts)
+        if has_passages:
+            user_content = USER_PROMPT_WITH_PASSAGES.format(question=question, passages=contexts)
+        else:
+            user_content = USER_PROMPT_NO_PASSAGES.format(question=question)
         assistant_content = ASSISTANT_PROMPT.format(answer=answer)
     else:
         assert fewshot is not None
-        user_content = USER_PROMPT_WITH_COT.format(question=question, passages=contexts, fewshot=fewshot)
+        if has_passages:
+            user_content = USER_PROMPT_WITH_COT_WITH_PASSAGES.format(
+                question=question, passages=contexts, fewshot=fewshot)
+        else:
+            user_content = USER_PROMPT_WITH_COT_NO_PASSAGES.format(
+                question=question, fewshot=fewshot)
         assistant_content = ASSISTANT_PROMPT_WITH_COT.format(answer=answer)
 
     messages = [{

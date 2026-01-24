@@ -6,8 +6,7 @@ This module implements three inference modes following the PRAG paper:
 - PRAG: Parametric RAG (adapters merged into model, no passages in prompt)  
 - Combine: Both adapters and passages used together
 
-The key innovation is using PEFT's merge_and_unload() for each adapter sequentially
-to avoid bugs in add_weighted_adapter().
+The key is loading all adapters and then merging them properly.
 """
 
 import os
@@ -23,40 +22,48 @@ from root_dir_path import ROOT_DIR
 from utils import get_model, evaluate, predict, load_data, read_complete
 
 
-def load_and_merge_adapters(base_model, adapter_paths, device):
+def load_and_merge_all_adapters(base_model, adapter_paths):
     """
-    Load multiple LoRA adapters and merge them into the base model weights.
+    Load multiple LoRA adapters and merge them all into the base model.
     
-    This uses a sequential merge approach: for each adapter, we load it,
-    merge its weights into the base model using merge_and_unload(), 
-    which permanently modifies the base model weights.
+    This loads all adapters first (giving each a unique name), then sets them
+    all as active, and finally merges them into the base weights.
     
     Args:
-        base_model: The base model (will be modified in-place)
+        base_model: The base model
         adapter_paths: List of paths to adapter directories
-        device: Device to use
         
     Returns:
-        The model with all adapters merged into its weights
+        A new model with all adapter weights merged into base weights
     """
-    current_model = base_model
+    if not adapter_paths:
+        return base_model
     
-    for adapter_path in adapter_paths:
-        # Load the adapter
-        peft_model = PeftModel.from_pretrained(
-            current_model,
-            adapter_path,
-            is_trainable=False
-        )
-        # Merge adapter weights into base model and unload adapter structure
-        # This permanently modifies the base model weights
-        current_model = peft_model.merge_and_unload()
-        
-        # Clean up
-        torch.cuda.empty_cache()
-        gc.collect()
+    # Load the first adapter
+    peft_model = PeftModel.from_pretrained(
+        base_model,
+        adapter_paths[0],
+        adapter_name="adapter_0",
+        is_trainable=False
+    )
     
-    return current_model
+    # Load remaining adapters
+    for i, adapter_path in enumerate(adapter_paths[1:], start=1):
+        peft_model.load_adapter(adapter_path, adapter_name=f"adapter_{i}")
+    
+    # Set all adapters as active
+    adapter_names = [f"adapter_{i}" for i in range(len(adapter_paths))]
+    peft_model.set_adapter(adapter_names)
+    
+    # Merge all active adapters into base model and unload
+    merged_model = peft_model.merge_and_unload()
+    
+    # Clean up
+    del peft_model
+    torch.cuda.empty_cache()
+    gc.collect()
+    
+    return merged_model
 
 
 def main(args):
@@ -133,8 +140,8 @@ def main(args):
                     )
                     adapter_paths.append(adapter_path)
                 
-                # Merge all adapters into the model
-                merged_model = load_and_merge_adapters(model, adapter_paths, model.device)
+                # Load and merge all adapters
+                merged_model = load_and_merge_all_adapters(model, adapter_paths)
                 
                 # Generate prediction
                 if args.inference_method == "prag":
