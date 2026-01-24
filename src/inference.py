@@ -18,6 +18,7 @@ DEBUG_COMPARE_TOP_P_DEFAULT = 0.8
 DEBUG_COMPARE_TOP_K_DEFAULT = 20
 DEBUG_LOGITS_DIFF_LIMIT_DEFAULT = 3
 LOGITS_DIFF_EPSILON = 1e-12  # avoid divide-by-zero in diff ratio
+ADAPTER_WEIGHT_EPSILON = 1e-8
 DEBUG_ADAPTER_STATUS_LIMIT_DEFAULT = 3
 DEBUG_ADAPTER_WEIGHTS_LIMIT_DEFAULT = 3
 DEBUG_ADAPTER_WEIGHTS_NAMES_DEFAULT = "merge,0"  # "merge" is combined LoRA, "0" is first adapter_name loaded
@@ -44,14 +45,21 @@ def log_adapter_weights(model, adapter_name, sample_limit):
         return
     total_layers = 0
     zero_layers = 0
+    zero_b_layers = 0
+    sum_b = 0.0
+    max_b = 0.0
     sample_norms = []
     for module in model.modules():
         if hasattr(module, "lora_A") and adapter_name in module.lora_A and adapter_name in module.lora_B:
             total_layers += 1
             norm_a = module.lora_A[adapter_name].weight.detach().float().norm().item()
             norm_b = module.lora_B[adapter_name].weight.detach().float().norm().item()
+            sum_b += norm_b
+            max_b = max(max_b, norm_b)
             if norm_a == 0.0 and norm_b == 0.0:
                 zero_layers += 1
+            if norm_b <= ADAPTER_WEIGHT_EPSILON:
+                zero_b_layers += 1
             if len(sample_norms) < sample_limit:
                 sample_norms.append(f"A={norm_a:.6f} B={norm_b:.6f}")
             if len(sample_norms) >= sample_limit:
@@ -61,9 +69,11 @@ def log_adapter_weights(model, adapter_name, sample_limit):
         print(f"[adapter-weights] adapter={adapter_name} layers=0")
     else:
         sample_text = "; ".join(sample_norms)  # first N layers encountered in iteration order
+        mean_b = sum_b / total_layers
         print(
             "[adapter-weights] "
             f"adapter={adapter_name} layers={total_layers} zero_layers={zero_layers} "
+            f"zero_b_layers={zero_b_layers} meanB={mean_b:.6f} maxB={max_b:.6f} "
             f"samples={sample_text}"
         )
 
