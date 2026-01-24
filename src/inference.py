@@ -21,6 +21,7 @@ LOGITS_DIFF_EPSILON = 1e-12  # avoid divide-by-zero in diff ratio
 DEBUG_ADAPTER_STATUS_LIMIT_DEFAULT = 3
 DEBUG_ADAPTER_WEIGHTS_LIMIT_DEFAULT = 3
 DEBUG_ADAPTER_WEIGHTS_NAMES_DEFAULT = "merge,0"  # "merge" is combined LoRA, "0" is first adapter_name loaded
+MERGE_STRATEGY_DEFAULT = "linear"
 
 def parse_adapter_names(value):
     """Parse comma-separated adapter names into a list."""
@@ -243,14 +244,19 @@ def main(args):
                         stats = adapter_stats(adapter_path)
                         print(f"[inference] load {adapter_path}: {stats}")
                 # merge
-                lora_model = model.base_model if hasattr(model, "base_model") else model
-                lora_model.add_weighted_adapter(
-                    adapters = [str(i) for i in range(len(passages))], 
-                    weights = [1] * len(passages),
-                    adapter_name = "merge", 
-                    combination_type = "linear",
-                )
-                model.set_adapter("merge")
+                adapter_names = [str(i) for i in range(len(passages))]
+                if args.merge_strategy == "set":
+                    # activate multiple adapters directly (runtime composition, no merged weights)
+                    model.set_adapter(adapter_names)
+                else:
+                    lora_model = model.base_model if hasattr(model, "base_model") else model
+                    lora_model.add_weighted_adapter(
+                        adapters = adapter_names, 
+                        weights = [1] * len(passages),
+                        adapter_name = "merge", 
+                        combination_type = "linear",
+                    )
+                    model.set_adapter("merge")
                 if DEBUG_ADAPTER_LOG_LIMIT > 0:
                     try:
                         print(f"[inference] active adapters: {model.active_adapters}")
@@ -298,7 +304,8 @@ def main(args):
                         log_compare("icl(no_adapter,sample)", sample_base_pred.get("text", ""))
                     compare_count += 1
                 ret.append(pred)
-                model.delete_adapter("merge")
+                if args.merge_strategy == "linear":
+                    model.delete_adapter("merge")
                 model = model.unload()
                 torch.cuda.empty_cache()
                 gc.collect()
@@ -376,6 +383,13 @@ if __name__ == "__main__":
         type=str,
         default=DEBUG_ADAPTER_WEIGHTS_NAMES_DEFAULT,
         help="Comma-separated adapter names to inspect (e.g. merge,0).",
+    )
+    parser.add_argument(
+        "--merge_strategy",
+        type=str,
+        default=MERGE_STRATEGY_DEFAULT,
+        choices=["linear", "set"],
+        help="Merge adapters via linear weighting or by setting active adapters.",
     )
     # LoRA
     parser.add_argument("--lora_rank", type=int)
