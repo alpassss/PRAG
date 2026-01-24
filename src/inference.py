@@ -51,7 +51,10 @@ def merge_adapters_into_base(peft_model, adapter_names, weights):
                 # Get the base layer (could be Linear, Embedding, etc.)
                 base_layer = module.base_layer
                 if hasattr(base_layer, 'weight'):
-                    base_layer.weight.data += delta_weight.to(base_layer.weight.dtype)
+                    # Only convert dtype if needed
+                    if delta_weight.dtype != base_layer.weight.dtype:
+                        delta_weight = delta_weight.to(base_layer.weight.dtype)
+                    base_layer.weight.data += delta_weight
 
 
 def main(args):
@@ -155,9 +158,7 @@ def main(args):
                 peft_model.unload()
                 model.load_state_dict(original_state_dict)
                 
-                # Clean up
-                del peft_model
-                del merged_model
+                # Clean up memory
                 torch.cuda.empty_cache()
                 gc.collect()
 
