@@ -1,8 +1,16 @@
-torch==1.13.1
-transformers==4.44.2
-elasticsearch==8.15.0
-peft==0.13.2
-pandas==1.5.3
-numpy==1.26.4
-faiss-cpu==1.8.0
+# Core dependencies
+torch>=2.0.0
+transformers>=4.40.0
+peft>=0.10.0
+
+# Data processing
+pandas>=1.5.0
+numpy>=1.24.0
+
+# Search/Retrieval
+elasticsearch>=8.0.0
+faiss-cpu>=1.7.0
+
+# Utilities
 termcolor
+tqdm

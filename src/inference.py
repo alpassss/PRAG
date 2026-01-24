@@ -1,3 +1,15 @@
+"""
+Parametric RAG Inference Module
+
+This module implements three inference modes following the PRAG paper:
+- ICL: Traditional In-Context Learning RAG (passages in prompt, no adapter)
+- PRAG: Parametric RAG (adapters merged into model, no passages in prompt)  
+- Combine: Both adapters and passages used together
+
+The key innovation is using PEFT's merge_and_unload() for each adapter sequentially
+to avoid bugs in add_weighted_adapter().
+"""
+
 import os
 import gc
 import json
@@ -5,64 +17,57 @@ import argparse
 import torch
 from tqdm import tqdm
 from peft import PeftModel
-from peft.tuners.lora.layer import LoraLayer
 
 import prompt_template
 from root_dir_path import ROOT_DIR
 from utils import get_model, evaluate, predict, load_data, read_complete
 
 
-def merge_adapters_into_base(peft_model, adapter_names, weights):
+def load_and_merge_adapters(base_model, adapter_paths, device):
     """
-    Merge multiple LoRA adapters into the base model weights.
+    Load multiple LoRA adapters and merge them into the base model weights.
     
-    This function directly merges the weighted sum of all adapter contributions
-    into the base model weights, avoiding bugs in PEFT's add_weighted_adapter.
+    This uses a sequential merge approach: for each adapter, we load it,
+    merge its weights into the base model using merge_and_unload(), 
+    which permanently modifies the base model weights.
     
     Args:
-        peft_model: PeftModel with loaded adapters
-        adapter_names: list of adapter names to merge  
-        weights: list of weights for each adapter (should sum to desired total contribution)
+        base_model: The base model (will be modified in-place)
+        adapter_paths: List of paths to adapter directories
+        device: Device to use
+        
+    Returns:
+        The model with all adapters merged into its weights
     """
-    # Iterate over all modules and merge LoRA layers
-    for name, module in peft_model.named_modules():
-        if isinstance(module, LoraLayer):
-            # Accumulate weighted delta W = sum(weight_i * scaling_i * B_i @ A_i)
-            delta_weight = None
-            
-            for adapter_name, weight in zip(adapter_names, weights):
-                if adapter_name not in module.lora_A:
-                    continue
-                    
-                lora_A = module.lora_A[adapter_name].weight
-                lora_B = module.lora_B[adapter_name].weight
-                scaling = module.scaling[adapter_name]
-                
-                # Compute this adapter's contribution: weight * scaling * (B @ A)
-                adapter_delta = weight * scaling * (lora_B @ lora_A)
-                
-                if delta_weight is None:
-                    delta_weight = adapter_delta
-                else:
-                    delta_weight = delta_weight + adapter_delta
-            
-            # Add the merged delta to the base weight
-            if delta_weight is not None and hasattr(module, 'base_layer'):
-                # Get the base layer (could be Linear, Embedding, etc.)
-                base_layer = module.base_layer
-                if hasattr(base_layer, 'weight'):
-                    # Only convert dtype if needed
-                    if delta_weight.dtype != base_layer.weight.dtype:
-                        delta_weight = delta_weight.to(base_layer.weight.dtype)
-                    base_layer.weight.data += delta_weight
+    current_model = base_model
+    
+    for adapter_path in adapter_paths:
+        # Load the adapter
+        peft_model = PeftModel.from_pretrained(
+            current_model,
+            adapter_path,
+            is_trainable=False
+        )
+        # Merge adapter weights into base model and unload adapter structure
+        # This permanently modifies the base model weights
+        current_model = peft_model.merge_and_unload()
+        
+        # Clean up
+        torch.cuda.empty_cache()
+        gc.collect()
+    
+    return current_model
 
 
 def main(args):
     data_list = load_data(args.dataset, args.data_type, args.augment_model)
+    
+    # Load the base model
     model, tokenizer, generation_config = get_model(
         args.model_name,
-        max_new_tokens = args.max_new_tokens,
+        max_new_tokens=args.max_new_tokens,
     )
+    
     if args.with_cot:
         prompt_template.get_fewshot(args.dataset)
     
@@ -88,8 +93,9 @@ def main(args):
     )
     
     # For prag and combine modes, we need to restore the model after each sample
-    # Store the original state dict for restoration (deep copy to avoid reference issues)
+    # Store the original state dict for restoration
     if args.inference_method != "icl":
+        print("Saving original model state for restoration...")
         original_state_dict = {k: v.clone() for k, v in model.state_dict().items()}
     
     for filename, fulldata in data_list:
@@ -104,6 +110,7 @@ def main(args):
         ret, start_with = read_complete(predict_file)
 
         fulldata = fulldata[start_with:] if args.sample == -1 else fulldata[start_with:args.sample]
+        
         for test_id, data in tqdm(enumerate(fulldata), total=len(fulldata)):
             test_id = test_id + start_with
             assert test_id == len(ret), f"test_id {test_id} != len(ret) {len(ret)}"
@@ -112,60 +119,58 @@ def main(args):
             passages = data["passages"]
             answer = data["answer"]
 
-            def get_pred(mdl, psgs):
-                text = predict(mdl, tokenizer, generation_config, 
-                                        question, with_cot=args.with_cot, 
-                                        passages=psgs)
-                pred = {
-                    "test_id": test_id, 
-                    "question": question, 
-                    "answer": answer, 
-                    "text": text,
-                }
-                pred.update(evaluate(text, answer, args.with_cot))
-                return pred
-
             if args.inference_method == "icl":
-                ret.append(get_pred(model, psgs=passages))
+                # ICL mode: Use base model with passages in prompt
+                text = predict(model, tokenizer, generation_config, 
+                              question, with_cot=args.with_cot, 
+                              passages=passages)
             else:
-                # Load all passage-specific adapters
+                # PRAG or Combine mode: Load and merge adapters
+                adapter_paths = []
                 for pid in range(len(passages)):
-                    adapter_path = os.path.join(load_adapter_path, filename, f"data_{test_id}", f"passage_{pid}")
-                    if pid == 0:
-                        peft_model = PeftModel.from_pretrained(
-                            model, 
-                            adapter_path,
-                            adapter_name = "0", 
-                            is_trainable = False
-                        )
-                    else:
-                        peft_model.load_adapter(adapter_path, adapter_name = str(pid)) 
+                    adapter_path = os.path.join(
+                        load_adapter_path, filename, f"data_{test_id}", f"passage_{pid}"
+                    )
+                    adapter_paths.append(adapter_path)
                 
-                # Merge adapters into base model weights
-                adapter_names = [str(i) for i in range(len(passages))]
-                weights = [1.0] * len(passages)
+                # Merge all adapters into the model
+                merged_model = load_and_merge_adapters(model, adapter_paths, model.device)
                 
-                # Merge all adapters into base model weights (modifies in-place)
-                merge_adapters_into_base(peft_model, adapter_names, weights)
+                # Generate prediction
+                if args.inference_method == "prag":
+                    # PRAG mode: No passages in prompt (knowledge is in parameters)
+                    text = predict(merged_model, tokenizer, generation_config,
+                                  question, with_cot=args.with_cot,
+                                  passages=None)
+                else:  # combine mode
+                    # Combine mode: Use both adapters AND passages
+                    text = predict(merged_model, tokenizer, generation_config,
+                                  question, with_cot=args.with_cot,
+                                  passages=passages)
                 
-                # Get the base model with merged weights for inference
-                merged_model = peft_model.get_base_model()
-                
-                # Run inference with merged model
-                ret.append(get_pred(merged_model, psgs=None if args.inference_method == "prag" else passages))
-                
-                # Unload adapters and restore original model weights
-                peft_model.unload()
+                # Restore original model weights for next sample
                 model.load_state_dict(original_state_dict)
                 
-                # Clean up memory
+                # Clean up
+                del merged_model
                 torch.cuda.empty_cache()
                 gc.collect()
+            
+            # Build prediction record
+            pred = {
+                "test_id": test_id, 
+                "question": question, 
+                "answer": answer, 
+                "text": text,
+            }
+            pred.update(evaluate(text, answer, args.with_cot))
+            ret.append(pred)
 
+        # Save predictions
         with open(predict_file, "w") as fout:
             json.dump(ret, fout, indent=4)
 
-        ##### Evaluating #####
+        # Calculate and save metrics
         metrics = ["em", "f1", "prec", "recall"]
         ret_str = ""
         for met in metrics:
@@ -175,26 +180,51 @@ def main(args):
         ret_str += "\n" + json.dumps(vars(args), indent=4)
         with open(os.path.join(output_dir, "result.txt"), "w") as fout:
             fout.write(ret_str)
+        
+        print(f"Results for {filename}:")
+        print(ret_str.split("\n\n")[0])
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, required=True)
-    parser.add_argument("--max_new_tokens", type=int, required=True)
-    parser.add_argument("--dataset", type=str, required=True)
-    parser.add_argument("--data_type", type=str)
-    parser.add_argument("--with_cot", action="store_true")
-    parser.add_argument("--sample", type=int, default=-1) # -1 means all
-    parser.add_argument("--augment_model", type=str, default=None)  
-    parser.add_argument("--num_train_epochs", type=int, required=True)
-    parser.add_argument("--learning_rate", type=float, default=3e-4)
-    parser.add_argument("--inference_method", type=str, required=True, choices=["icl", "prag", "combine"])
-    # LoRA
-    parser.add_argument("--lora_rank", type=int)
-    parser.add_argument("--lora_alpha", type=int)
+    parser = argparse.ArgumentParser(description="Parametric RAG Inference")
+    parser.add_argument("--model_name", type=str, required=True,
+                       help="Model name: llama3-8b-instruct, qwen2.5-1.5b-instruct, llama3.2-1b-instruct")
+    parser.add_argument("--max_new_tokens", type=int, required=True,
+                       help="Maximum number of tokens to generate")
+    parser.add_argument("--dataset", type=str, required=True,
+                       help="Dataset name: hotpotqa, 2wikimultihopqa, popqa, complexwebquestions")
+    parser.add_argument("--data_type", type=str, default=None,
+                       help="Data type within dataset (optional)")
+    parser.add_argument("--with_cot", action="store_true",
+                       help="Use Chain-of-Thought prompting")
+    parser.add_argument("--sample", type=int, default=-1,
+                       help="Number of samples to process (-1 for all)")
+    parser.add_argument("--augment_model", type=str, default=None,
+                       help="Model used for data augmentation")
+    parser.add_argument("--num_train_epochs", type=int, required=True,
+                       help="Number of training epochs used in encode step")
+    parser.add_argument("--learning_rate", type=float, default=3e-4,
+                       help="Learning rate used in encode step")
+    parser.add_argument("--inference_method", type=str, required=True, 
+                       choices=["icl", "prag", "combine"],
+                       help="Inference method: icl (RAG), prag (Parametric RAG), combine (both)")
+    parser.add_argument("--lora_rank", type=int, required=True,
+                       help="LoRA rank")
+    parser.add_argument("--lora_alpha", type=int, required=True,
+                       help="LoRA alpha")
+    
     args = parser.parse_args()
-    assert args.lora_rank and args.lora_alpha, "No Config for LoRA"
+    
     if args.augment_model is None:
         args.augment_model = args.model_name
-    print(args)
+    
+    print("=" * 60)
+    print("Parametric RAG Inference")
+    print("=" * 60)
+    print(f"Model: {args.model_name}")
+    print(f"Dataset: {args.dataset}")
+    print(f"Inference Method: {args.inference_method}")
+    print(f"LoRA Config: rank={args.lora_rank}, alpha={args.lora_alpha}")
+    print("=" * 60)
+    
     main(args)
