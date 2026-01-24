@@ -20,6 +20,15 @@ DEBUG_LOGITS_DIFF_LIMIT_DEFAULT = 3
 LOGITS_DIFF_EPSILON = 1e-12  # avoid divide-by-zero in diff ratio
 DEBUG_ADAPTER_STATUS_LIMIT_DEFAULT = 3
 DEBUG_ADAPTER_WEIGHTS_LIMIT_DEFAULT = 3
+DEBUG_ADAPTER_WEIGHTS_NAMES_DEFAULT = "merge,0"  # "merge" is combined LoRA, "0" is first adapter_name loaded
+
+def parse_adapter_names(value):
+    """Parse comma-separated adapter names into a list."""
+    if value is None:
+        value = DEBUG_ADAPTER_WEIGHTS_NAMES_DEFAULT
+    if not isinstance(value, str):
+        raise ValueError("debug_adapter_weights_names must be a comma-separated string")
+    return [name.strip() for name in value.split(",") if name.strip()]
 
 def log_adapter_weights(model, adapter_name, sample_limit):
     """Log basic adapter weight norms for a named adapter (debug only).
@@ -29,6 +38,9 @@ def log_adapter_weights(model, adapter_name, sample_limit):
         adapter_name: Adapter name to inspect.
         sample_limit: Number of layer norm samples to print.
     """
+    if not hasattr(model, "peft_config") or adapter_name not in model.peft_config:
+        print(f"[adapter-weights] adapter={adapter_name} not found in model.peft_config")
+        return
     total_layers = 0
     zero_layers = 0
     sample_norms = []
@@ -96,6 +108,7 @@ def main(args):
     adapter_status_limit = args.debug_adapter_status_limit
     debug_adapter_weights = args.debug_adapter_weights
     adapter_weights_limit = args.debug_adapter_weights_limit
+    adapter_weights_names = parse_adapter_names(args.debug_adapter_weights_names)
     def log_compare(label, text):
         print(f"[compare] {label}: {text[:DEBUG_OUTPUT_CHAR_LIMIT]}")
     def log_adapter_status(model):
@@ -247,8 +260,9 @@ def main(args):
                     log_adapter_status(model)
                     adapter_status_count += 1
                 if debug_adapter_weights and adapter_weights_count < adapter_weights_limit:
-                    # merge adapter reflects combined LoRA for this inference
-                    log_adapter_weights(model, "merge", args.debug_adapter_weights_sample_limit)
+                    for name in adapter_weights_names:
+                        # inspect requested adapter names (e.g. merge or base adapters)
+                        log_adapter_weights(model, name, args.debug_adapter_weights_sample_limit)
                     adapter_weights_count += 1
                 if logits_diff and logits_count < logits_diff_limit:
                     # debug-only extra forward passes; this is intentionally expensive
@@ -343,7 +357,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--debug_adapter_weights",
         action="store_true",
-        help="Debug-only: print adapter weight norms for the merge adapter.",
+        help="Debug-only: print adapter weight norms for selected adapters.",
     )
     parser.add_argument(
         "--debug_adapter_weights_limit",
@@ -356,6 +370,12 @@ if __name__ == "__main__":
         type=int,
         default=DEBUG_ADAPTER_WEIGHTS_LIMIT_DEFAULT,
         help="Number of adapter layer samples to report per log.",
+    )
+    parser.add_argument(
+        "--debug_adapter_weights_names",
+        type=str,
+        default=DEBUG_ADAPTER_WEIGHTS_NAMES_DEFAULT,
+        help="Comma-separated adapter names to inspect (e.g. merge,0).",
     )
     # LoRA
     parser.add_argument("--lora_rank", type=int)
