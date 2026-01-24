@@ -122,6 +122,13 @@ def main(args):
     adapter_weights_names = parse_adapter_names(args.debug_adapter_weights_names)
     def log_compare(label, text):
         print(f"[compare] {label}: {text[:DEBUG_OUTPUT_CHAR_LIMIT]}")
+    def reload_base_model():
+        """Reload base model from disk (debug only)."""
+        refreshed_model, _tokenizer, _config = get_model(
+            args.model_name,
+            max_new_tokens=args.max_new_tokens,
+        )
+        return refreshed_model
     def log_adapter_status(model):
         """Log PEFT adapter status (enabled/active_adapters/num_adapter_layers) if available."""
         if not hasattr(model, "get_model_status"):
@@ -239,6 +246,16 @@ def main(args):
                     compare_count += 1
                 ret.append(pred)
             else:
+                if args.reload_peft:
+                    try:
+                        if hasattr(model, "unload"):
+                            model = model.unload()
+                    except (AttributeError, RuntimeError):
+                        pass
+                    del model
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    model = reload_base_model()
                 for pid in range(len(passages)):
                     adapter_path = os.path.join(load_adapter_path, filename, f"data_{test_id}", f"passage_{pid}")
                     if pid == 0:
@@ -400,6 +417,11 @@ if __name__ == "__main__":
         default=MERGE_STRATEGY_DEFAULT,
         choices=["linear", "set"],
         help="Merge adapters via linear weighting or by setting active adapters.",
+    )
+    parser.add_argument(
+        "--reload_peft",
+        action="store_true",
+        help="Reload base model before adapter loading to avoid cached weights.",
     )
     # LoRA
     parser.add_argument("--lora_rank", type=int)
