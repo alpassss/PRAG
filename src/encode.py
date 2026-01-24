@@ -15,6 +15,7 @@ from utils import get_model, load_data, adapter_stats
 
 DEBUG_ADAPTER_LOG_LIMIT = 1
 DEBUG_TRAINABLE_LOG_LIMIT_DEFAULT = 1
+DEBUG_GRAD_LOG_LIMIT_DEFAULT = 3
 
 import numpy as np
 import random
@@ -106,8 +107,43 @@ def log_trainable_parameters(model):
     else:
         print("[encode] trainable parameters unavailable on this model.")
 
+def grad_norm(tensor):
+    if tensor is None:
+        return 0.0
+    return tensor.grad.detach().float().norm().item() if tensor.requires_grad and tensor.grad is not None else 0.0
+
+def collect_lora_norms(model, warned_adapters=None):
+    norms = {"A": [], "B": [], "grad_A": [], "grad_B": []}
+    warned_adapters = warned_adapters if warned_adapters is not None else set()
+    for module in model.modules():
+        if hasattr(module, "lora_A") and hasattr(module, "lora_B"):
+            for name in module.lora_A:
+                if name not in module.lora_B:
+                    if name not in warned_adapters:
+                        print(f"[encode] warning: lora_B missing for adapter {name}")
+                        warned_adapters.add(name)
+                    continue
+                a = module.lora_A[name].weight
+                b = module.lora_B[name].weight
+                norms["A"].append(a.detach().float().norm().item())
+                norms["B"].append(b.detach().float().norm().item())
+                grad_a = grad_norm(a)
+                grad_b = grad_norm(b)
+                norms["grad_A"].append(grad_a)
+                norms["grad_B"].append(grad_b)
+    return norms
+
+def log_lora_norms(label, norms):
+    def safe_mean(values):
+        return sum(values) / len(values) if values else 0.0
+    print(
+        f"[encode] {label} | "
+        f"A={safe_mean(norms['A']):.6f} B={safe_mean(norms['B']):.6f} "
+        f"gradA={safe_mean(norms['grad_A']):.6f} gradB={safe_mean(norms['grad_B']):.6f}"
+    )
+
 def train(question, augments, args, model, tokenizer, 
-          init_adapter_path, save_path, debug_trainable=False):
+          init_adapter_path, save_path, debug_trainable=False, debug_grad=False):
     """Train LoRA adapter for a single passage and optionally log trainable params.
 
     Args:
@@ -119,6 +155,7 @@ def train(question, augments, args, model, tokenizer,
         init_adapter_path: Path to base LoRA weights.
         save_path: Output directory for adapter.
         debug_trainable: When True, print trainable parameter summary.
+        debug_grad: When True, log LoRA A/B grad and weight norms.
     """
     prompt_ids = get_train_data(args.augment_model, augments, tokenizer, args)
     train_data = TrainingData(prompt_ids, tokenizer)
@@ -135,13 +172,21 @@ def train(question, augments, args, model, tokenizer,
     model.model_parallel = True
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     optimizer = torch.optim.AdamW(model_parameters, lr=args.learning_rate)
+    warned_adapters = set()
     for epoch in range(args.num_train_epochs):
         for step, batch in enumerate(train_dataloader):
+            should_log_grad = debug_grad and step < args.debug_grad_limit
             optimizer.zero_grad()
             outputs = model(**batch)
             loss = outputs.loss
             loss.backward()
+            if should_log_grad:
+                norms = collect_lora_norms(model, warned_adapters)
+                log_lora_norms(f"grad step {step}", norms)
             optimizer.step()
+            if should_log_grad:
+                post_norms = collect_lora_norms(model, warned_adapters)
+                log_lora_norms(f"weight step {step}", post_norms)
     os.makedirs(save_path, exist_ok=True)
     model.save_pretrained(save_path)
     model = model.unload()
@@ -205,8 +250,9 @@ def main(args):
                 if os.path.exists(os.path.join(save_path, "adapter_model.safetensors")):
                     continue
                 debug_trainable = args.debug_trainable and pid < args.debug_trainable_limit
+                debug_grad = args.debug_grad and pid < args.debug_grad_limit
                 model = train(data["question"], [augment[pid]], args, model, tokenizer, 
-                            init_adapter_path, save_path, debug_trainable=debug_trainable)
+                            init_adapter_path, save_path, debug_trainable=debug_trainable, debug_grad=debug_grad)
                 if DEBUG_ADAPTER_LOG_LIMIT > 0 and pid < DEBUG_ADAPTER_LOG_LIMIT:
                     print(f"[encode] saved {save_path}: {adapter_stats(save_path)}")
                 
@@ -225,6 +271,8 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", type=float, default=3e-4)
     parser.add_argument("--debug_trainable", action="store_true")
     parser.add_argument("--debug_trainable_limit", type=int, default=DEBUG_TRAINABLE_LOG_LIMIT_DEFAULT)
+    parser.add_argument("--debug_grad", action="store_true")
+    parser.add_argument("--debug_grad_limit", type=int, default=DEBUG_GRAD_LOG_LIMIT_DEFAULT)
     # LoRA
     parser.add_argument("--lora_rank", type=int, default=None)
     parser.add_argument("--lora_alpha", type=int, default=None)
