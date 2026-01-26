@@ -21,6 +21,7 @@ from lora_debug import (
     print_lora_storage_info,
     compare_model_weights_before_after_lora,
     read_safetensors_file,
+    compare_file_vs_memory,
 )
 
 def main(args):

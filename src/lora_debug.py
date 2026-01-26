@@ -107,6 +107,23 @@ def print_lora_storage_info(save_path: str, title: str = "LoRA Storage Info"):
                         print(f"    - {f}: {size} bytes ({size/1024:.2f} KB)")
                 except OSError as e:
                     print(f"    - {f}: [Error getting file info: {e}]")
+            
+            # Read and display adapter_config.json if it exists
+            config_path = os.path.join(save_path, "adapter_config.json")
+            if os.path.exists(config_path):
+                import json
+                try:
+                    with open(config_path, 'r') as f:
+                        config = json.load(f)
+                    print(f"\n  adapter_config.json contents:")
+                    print(f"    r (rank): {config.get('r', 'N/A')}")
+                    print(f"    lora_alpha: {config.get('lora_alpha', 'N/A')}")
+                    print(f"    target_modules: {config.get('target_modules', 'N/A')}")
+                    print(f"    lora_dropout: {config.get('lora_dropout', 'N/A')}")
+                    print(f"    inference_mode: {config.get('inference_mode', 'N/A')}")
+                    print(f"    init_lora_weights: {config.get('init_lora_weights', 'N/A')}")
+                except Exception as e:
+                    print(f"  [ERROR] Failed to read adapter_config.json: {e}")
         except OSError as e:
             print(f"  [ERROR] Cannot list directory: {e}")
     else:
@@ -342,6 +359,9 @@ def debug_inference_load_adapter(model, adapter_path: str, adapter_name: str, pi
     print("\n  [Model memory - what's loaded into the model:]")
     lora_weights = get_lora_weights(model, adapter_name)
     print_lora_weight_summary(lora_weights, f"LoRA Weights for Adapter '{adapter_name}' (in memory)", num_layers=2)
+    
+    # Compare file vs memory to identify if loading is the problem
+    compare_file_vs_memory(adapter_path, model, adapter_name)
 
 
 def debug_inference_after_merge(model, adapter_names: List[str], 
@@ -443,4 +463,80 @@ def verify_saved_adapter(save_path: str):
     print(" VERIFICATION: Checking saved adapter file")
     print("#" * 80)
     
-    read_safetensors_file(save_path, f"Saved Adapter Contents at {save_path}")
+    weights = read_safetensors_file(save_path, f"Saved Adapter Contents at {save_path}")
+    
+    if weights:
+        # Summarize lora_B status
+        lora_b_keys = [k for k in weights.keys() if 'lora_B' in k]
+        lora_b_zeros = sum(1 for k in lora_b_keys if weights[k].abs().max().item() < ZERO_THRESHOLD)
+        
+        print(f"\n  [SUMMARY]")
+        print(f"    Total lora_B tensors: {len(lora_b_keys)}")
+        print(f"    All-zero lora_B tensors: {lora_b_zeros}")
+        
+        if lora_b_zeros == len(lora_b_keys):
+            print(f"    [PROBLEM] All lora_B tensors are zeros - training may not have saved correctly!")
+        elif lora_b_zeros > 0:
+            print(f"    [WARNING] Some lora_B tensors are zeros")
+        else:
+            print(f"    [OK] All lora_B tensors have trained values")
+
+
+def compare_file_vs_memory(adapter_path: str, model, adapter_name: str):
+    """
+    Compare LoRA weights between the safetensors file and what's loaded in model memory.
+    This helps diagnose if the issue is in saving or loading.
+    """
+    print("\n" + "=" * 80)
+    print(f" COMPARISON: File vs Memory for adapter '{adapter_name}'")
+    print("=" * 80)
+    
+    # Read from file
+    file_weights = read_safetensors_file(adapter_path, "File Contents (disk)")
+    if file_weights is None:
+        print("  [ERROR] Could not read file weights")
+        return
+    
+    # Get from memory
+    memory_weights = get_lora_weights(model, adapter_name)
+    
+    print(f"\n  File has {len(file_weights)} tensors")
+    print(f"  Memory has {len(memory_weights)} layer groups")
+    
+    # Compare lora_B values specifically
+    print(f"\n  [lora_B Comparison]")
+    
+    mismatches = 0
+    for file_key in file_weights.keys():
+        if 'lora_B' not in file_key:
+            continue
+            
+        file_tensor = file_weights[file_key]
+        file_is_zero = file_tensor.abs().max().item() < ZERO_THRESHOLD
+        
+        # Find corresponding memory tensor
+        found_in_memory = False
+        for mem_layer, mem_weights in memory_weights.items():
+            if 'lora_B' in mem_weights:
+                mem_tensor = mem_weights['lora_B']
+                # Check if shapes match
+                if file_tensor.shape == mem_tensor.shape:
+                    mem_is_zero = mem_tensor.abs().max().item() < ZERO_THRESHOLD
+                    
+                    if file_is_zero != mem_is_zero:
+                        mismatches += 1
+                        print(f"\n    [MISMATCH] {file_key}")
+                        print(f"      File: {'ZERO' if file_is_zero else 'NON-ZERO'} (max={file_tensor.abs().max().item():.8f})")
+                        print(f"      Memory: {'ZERO' if mem_is_zero else 'NON-ZERO'} (max={mem_tensor.abs().max().item():.8f})")
+                    
+                    found_in_memory = True
+                    break
+        
+        if not found_in_memory:
+            print(f"\n    [NOT FOUND IN MEMORY] {file_key}")
+    
+    if mismatches == 0:
+        print(f"\n    [OK] File and memory weights match in zero/non-zero status")
+    else:
+        print(f"\n    [PROBLEM] {mismatches} weight tensors have different zero/non-zero status between file and memory!")
+        print(f"    This suggests PEFT is not loading the weights correctly.")
