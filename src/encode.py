@@ -177,7 +177,11 @@ def main(args):
         os.makedirs(init_adapter_path, exist_ok=True)
         model.save_pretrained(init_adapter_path)
         time.sleep(2)
-        assert os.path.exists(os.path.join(init_adapter_path, "adapter_model.safetensors")) 
+        assert os.path.exists(os.path.join(init_adapter_path, "adapter_model.safetensors"))
+        # Unload the PeftModel to get back the base model for subsequent training
+        model = model.unload()
+        torch.cuda.empty_cache()
+        gc.collect()
 
     cot_name = "cot" if args.with_cot else "direct"
     debug_count = 0  # Only debug first few iterations to avoid too much output
