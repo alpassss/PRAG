@@ -14,7 +14,7 @@ from typing import Dict, List
 
 import prompt_template
 from root_dir_path import ROOT_DIR
-from utils import get_model
+from utils import get_model, print_lora_weights, print_adapter_weights_from_path
 
 seed = 42 
 torch.manual_seed(seed)
@@ -125,6 +125,10 @@ def main(args):
     model = get_peft_model(model, peft_config)
     model.is_parallelizable = True
     model.model_parallel = True
+    
+    # Debug: Print LoRA weights before training
+    if args.debug_lora:
+        print_lora_weights(model, tag="BEFORE warmup training", max_layers=2)
 
     train_data = TrainingData(dataset, tokenizer, args)
     train_dataloader = torch.utils.data.DataLoader(
@@ -148,6 +152,11 @@ def main(args):
             if step % logging_step == 0:
                 print(f"Epoch {epoch+1}, Step {step}, Loss: {loss.item():.4f}")
                 losses.append(loss.item())
+    
+    # Debug: Print LoRA weights after training
+    if args.debug_lora:
+        print_lora_weights(model, tag="AFTER warmup training", max_layers=2)
+    
     save_path = os.path.join(
         ROOT_DIR, 
         "warmup", 
@@ -157,6 +166,11 @@ def main(args):
     )
     os.makedirs(save_path, exist_ok=True)
     model.save_pretrained(save_path)
+    
+    # Debug: Verify saved weights
+    if args.debug_lora:
+        print_adapter_weights_from_path(save_path, tag="SAVED warmup weights")
+    
     with open(os.path.join(save_path, "training_config.json"), "w") as fout:
         json.dump(vars(args), fout, indent=4)
     plt.figure(dpi=300)
@@ -179,6 +193,9 @@ if __name__ == "__main__":
     # LoRA
     parser.add_argument("--lora_rank", type=int, default=2)
     parser.add_argument("--lora_alpha", type=int, default=32)
+    # Debug
+    parser.add_argument("--debug_lora", action="store_true",
+                        help="Enable LoRA weight debugging: print A/B matrix values during training")
 
     args = parser.parse_args()
     main(args)
