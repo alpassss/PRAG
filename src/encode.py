@@ -13,6 +13,14 @@ import prompt_template
 from root_dir_path import ROOT_DIR
 from utils import get_model, load_data
 
+# Import debug utilities
+from lora_debug import (
+    debug_encode_before_training,
+    debug_encode_after_training,
+    get_lora_weights,
+    print_lora_storage_info,
+)
+
 import numpy as np
 import random
 
@@ -92,7 +100,7 @@ def get_train_data(aug_model, augments, tokenizer, args):
 
 
 def train(question, augments, args, model, tokenizer, 
-          init_adapter_path, save_path):
+          init_adapter_path, save_path, debug=False):
     prompt_ids = get_train_data(args.augment_model, augments, tokenizer, args)
     train_data = TrainingData(prompt_ids, tokenizer)
     train_dataloader = torch.utils.data.DataLoader(
@@ -104,6 +112,12 @@ def train(question, augments, args, model, tokenizer,
     model = PeftModel.from_pretrained(model, init_adapter_path, is_trainable=True)
     model.is_parallelizable = True
     model.model_parallel = True
+    
+    # DEBUG: Show LoRA weights before training
+    initial_weights = None
+    if debug:
+        initial_weights = debug_encode_before_training(model, init_adapter_path)
+    
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     optimizer = torch.optim.AdamW(model_parameters, lr=args.learning_rate)
     for epoch in range(args.num_train_epochs):
@@ -115,6 +129,10 @@ def train(question, augments, args, model, tokenizer,
             optimizer.step()
     os.makedirs(save_path, exist_ok=True)
     model.save_pretrained(save_path)
+    
+    # DEBUG: Show LoRA weights after training and compare
+    if debug:
+        debug_encode_after_training(model, save_path, initial_weights)
     model = model.unload()
     torch.cuda.empty_cache()
     gc.collect()
@@ -134,6 +152,14 @@ def main(args):
         f"rank={args.lora_rank}_alpha={args.lora_alpha}",
         "base_weight",
     )
+    
+    # DEBUG: Show base_weight path
+    if args.debug:
+        print("\n" + "#" * 80)
+        print(" DEBUG: ENCODE - INITIALIZATION")
+        print("#" * 80)
+        print_lora_storage_info(init_adapter_path, "Base LoRA Weight Path")
+    
     if not os.path.exists(os.path.join(init_adapter_path, "adapter_model.safetensors")):
         print("No LoRA base weight, creating...")
         peft_config = LoraConfig(
@@ -154,6 +180,7 @@ def main(args):
         assert os.path.exists(os.path.join(init_adapter_path, "adapter_model.safetensors")) 
 
     cot_name = "cot" if args.with_cot else "direct"
+    debug_count = 0  # Only debug first few iterations to avoid too much output
     for filename, fulldata in data_list:
         filename = filename.split('.')[0] 
         print(f"### Solving {filename} ###")
@@ -175,8 +202,11 @@ def main(args):
                 save_path = os.path.join(output_dir, f"data_{did}", f"passage_{pid}")
                 if os.path.exists(os.path.join(save_path, "adapter_model.safetensors")):
                     continue
+                # Only debug first 2 training iterations
+                should_debug = args.debug and debug_count < 2
                 model = train(data["question"], [augment[pid]], args, model, tokenizer, 
-                            init_adapter_path, save_path)
+                            init_adapter_path, save_path, debug=should_debug)
+                debug_count += 1
                 
 
 if __name__ == "__main__":
@@ -194,6 +224,8 @@ if __name__ == "__main__":
     # LoRA
     parser.add_argument("--lora_rank", type=int, default=None)
     parser.add_argument("--lora_alpha", type=int, default=None)
+    # Debug
+    parser.add_argument("--debug", action="store_true", help="Enable LoRA weight debugging output")
     args = parser.parse_args()
     assert args.lora_rank and args.lora_alpha, "No config for LoRA"
     if args.augment_model is None:
