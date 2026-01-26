@@ -427,6 +427,22 @@ def compare_lora_weights(model1_or_path, model2_or_path, tag1="model1", tag2="mo
     
     Returns True if weights are significantly different, False otherwise.
     """
+    def normalize_key(key):
+        """
+        Normalize LoRA key names for comparison.
+        Keys from saved adapters: base_model.model.model.layers.0.mlp.down_proj.lora_A.weight
+        Keys from PeftModel: base_model.model.base_model.model.model.layers.0.mlp.down_proj.lora_A.default.weight
+        
+        This function extracts the essential part: layers.X.mlp.{proj}.lora_{A/B}
+        """
+        # Remove common prefixes
+        key = key.replace('base_model.model.base_model.model.model.', '')
+        key = key.replace('base_model.model.model.', '')
+        key = key.replace('base_model.model.', '')
+        # Remove .default suffix (present in PeftModel but not in saved files)
+        key = key.replace('.default.weight', '.weight')
+        return key
+    
     def get_state_dict(model_or_path):
         if isinstance(model_or_path, str):
             # It's a path
@@ -457,23 +473,34 @@ def compare_lora_weights(model1_or_path, model2_or_path, tag1="model1", tag2="mo
         state_dict1 = get_state_dict(model1_or_path)
         state_dict2 = get_state_dict(model2_or_path)
         
-        # Find common keys
-        keys1 = set(state_dict1.keys())
-        keys2 = set(state_dict2.keys())
-        common_keys = keys1 & keys2
+        # Normalize keys for comparison
+        normalized1 = {normalize_key(k): (k, v) for k, v in state_dict1.items()}
+        normalized2 = {normalize_key(k): (k, v) for k, v in state_dict2.items()}
         
-        if not common_keys:
+        # Find common normalized keys
+        norm_keys1 = set(normalized1.keys())
+        norm_keys2 = set(normalized2.keys())
+        common_norm_keys = norm_keys1 & norm_keys2
+        
+        if not common_norm_keys:
             print("WARNING: No common keys found between the two models!")
+            print(f"Keys in {tag1} (first 5): {list(state_dict1.keys())[:5]}")
+            print(f"Keys in {tag2} (first 5): {list(state_dict2.keys())[:5]}")
+            print(f"Normalized keys in {tag1} (first 5): {list(norm_keys1)[:5]}")
+            print(f"Normalized keys in {tag2} (first 5): {list(norm_keys2)[:5]}")
             return False
         
-        print(f"Common parameters: {len(common_keys)}")
+        print(f"Common parameters (after key normalization): {len(common_norm_keys)}")
         
         total_diff = 0
         significantly_different = False
         
-        for key in sorted(common_keys):
-            data1 = state_dict1[key].float()
-            data2 = state_dict2[key].float()
+        for norm_key in sorted(common_norm_keys):
+            orig_key1, data1 = normalized1[norm_key]
+            orig_key2, data2 = normalized2[norm_key]
+            
+            data1 = data1.float()
+            data2 = data2.float()
             
             diff = (data1 - data2).abs()
             max_diff = diff.max().item()
@@ -481,12 +508,12 @@ def compare_lora_weights(model1_or_path, model2_or_path, tag1="model1", tag2="mo
             
             if max_diff > 1e-6:
                 significantly_different = True
-                print(f"\n{key}")
+                print(f"\n{norm_key}")
                 print(f"  Max diff: {max_diff:.6f}, Mean diff: {mean_diff:.6f}")
             
             total_diff += mean_diff
         
-        avg_diff = total_diff / len(common_keys)
+        avg_diff = total_diff / len(common_norm_keys)
         print(f"\n--- Summary ---")
         print(f"Average difference: {avg_diff:.6f}")
         print(f"Weights are {'DIFFERENT' if significantly_different else 'IDENTICAL (or nearly identical)'}")
