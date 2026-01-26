@@ -114,6 +114,11 @@ def main(args):
                 
                 for pid in range(len(passages)):
                     adapter_path = os.path.join(load_adapter_path, filename, f"data_{test_id}", f"passage_{pid}")
+                    
+                    # DEBUG: First verify what's in the file before loading
+                    if should_debug:
+                        read_safetensors_file(adapter_path, f"File Contents BEFORE Loading Adapter '{pid}'")
+                    
                     if pid == 0:
                         model = PeftModel.from_pretrained(
                             model, 
@@ -124,7 +129,7 @@ def main(args):
                     else:
                         model.load_adapter(adapter_path, adapter_name=str(pid))
                     
-                    # DEBUG: Show loaded adapter info
+                    # DEBUG: Show loaded adapter info (in model memory)
                     if should_debug:
                         debug_inference_load_adapter(model, adapter_path, str(pid), pid)
                 
