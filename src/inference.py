@@ -117,11 +117,11 @@ def main(args):
                         model = PeftModel.from_pretrained(
                             model, 
                             adapter_path,
-                            adapter_name = "0", 
-                            is_trainable = False
+                            adapter_name="0", 
+                            is_trainable=False
                         )
                     else:
-                        model.load_adapter(adapter_path, adapter_name = str(pid))
+                        model.load_adapter(adapter_path, adapter_name=str(pid))
                     
                     # DEBUG: Show loaded adapter info
                     if should_debug:

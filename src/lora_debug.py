@@ -8,7 +8,7 @@ This module provides debugging functions to inspect LoRA weights during:
 
 import os
 import torch
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 
 def get_lora_weights(model, adapter_name: str = "default") -> Dict[str, Dict[str, torch.Tensor]]:
@@ -55,7 +55,7 @@ def print_lora_weight_summary(lora_weights: Dict[str, Dict[str, torch.Tensor]],
     displayed = 0
     
     for layer_name in layers:
-        if displayed >= num_layers:
+        if num_layers > 0 and displayed >= num_layers:
             print(f"\n... (showing {num_layers} of {len(layers)} layers, set num_layers=-1 to show all)")
             break
             
@@ -86,13 +86,19 @@ def print_lora_storage_info(save_path: str, title: str = "LoRA Storage Info"):
     print(f"  Path: {save_path}")
     
     if os.path.exists(save_path):
-        files = os.listdir(save_path)
-        print(f"  Files: {files}")
-        for f in files:
-            file_path = os.path.join(save_path, f)
-            if os.path.isfile(file_path):
-                size = os.path.getsize(file_path)
-                print(f"    - {f}: {size} bytes ({size/1024:.2f} KB)")
+        try:
+            files = os.listdir(save_path)
+            print(f"  Files: {files}")
+            for f in files:
+                file_path = os.path.join(save_path, f)
+                try:
+                    if os.path.isfile(file_path):
+                        size = os.path.getsize(file_path)
+                        print(f"    - {f}: {size} bytes ({size/1024:.2f} KB)")
+                except OSError as e:
+                    print(f"    - {f}: [Error getting file info: {e}]")
+        except OSError as e:
+            print(f"  [ERROR] Cannot list directory: {e}")
     else:
         print("  [WARNING] Path does not exist!")
 
