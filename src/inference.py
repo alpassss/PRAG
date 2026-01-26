@@ -8,7 +8,7 @@ from peft import PeftModel
 
 import prompt_template
 from root_dir_path import ROOT_DIR
-from utils import get_model, evaluate, predict, load_data, read_complete, print_lora_weights, print_adapter_weights_from_path, compare_lora_weights, DEBUG_MAX_ITEMS
+from utils import get_model, evaluate, predict, load_data, read_complete, print_lora_weights, print_adapter_weights_from_path, compare_lora_weights, DEBUG_MAX_ITEMS, print_lora_sample_values, print_merged_lora_info, compare_base_model_with_lora
 
 def main(args):
     data_list = load_data(args.dataset, args.data_type, args.augment_model)
@@ -101,16 +101,23 @@ def main(args):
                 ret.append(get_pred(model, psgs=passages))
             else:
                 if enable_debug:
-                    print(f"\n[DEBUG] Processing test_id={test_id}, question: {question[:50]}...")
-                    print(f"[DEBUG] Number of passages: {len(passages)}")
+                    print(f"\n{'='*60}")
+                    print(f"[DEBUG] INFERENCE - Processing test_id={test_id}")
+                    print(f"{'='*60}")
+                    print(f"[DEBUG] Question: {question[:80]}...")
+                    print(f"[DEBUG] Number of passages/adapters to load: {len(passages)}")
+                
+                # Store reference to base model for comparison later
+                base_model_ref = model
                 
                 for pid in range(len(passages)):
                     adapter_path = os.path.join(load_adapter_path, filename, f"data_{test_id}", f"passage_{pid}")
                     
                     if enable_debug:
-                        print(f"\n[DEBUG] Loading adapter {pid} from: {adapter_path}")
+                        print(f"\n[DEBUG] --- Loading Adapter {pid} ---")
+                        print(f"[DEBUG] Loading from path: {adapter_path}")
                         if os.path.exists(adapter_path):
-                            print_adapter_weights_from_path(adapter_path, tag=f"Adapter {pid} BEFORE loading into model")
+                            print_lora_sample_values(adapter_path, tag=f"Adapter {pid} (from file)", layer_idx=0)
                         else:
                             print(f"WARNING: Adapter path does not exist: {adapter_path}")
                     
@@ -124,7 +131,7 @@ def main(args):
                         
                         if enable_debug:
                             print(f"[DEBUG] Loaded first adapter (adapter_name='0')")
-                            print_lora_weights(model, tag=f"After loading adapter 0", max_layers=2)
+                            print_lora_sample_values(model, tag=f"Adapter 0 (in model)", layer_idx=0)
                     else:
                         model.load_adapter(adapter_path, adapter_name = str(pid)) 
                         
@@ -133,18 +140,19 @@ def main(args):
                 
                 # Debug: Print all adapter info before merge
                 if enable_debug:
-                    print(f"\n[DEBUG] All adapters loaded. Active adapters: {list(model.peft_config.keys())}")
-                    for adapter_name in model.peft_config.keys():
-                        print(f"[DEBUG] Adapter '{adapter_name}' config: {model.peft_config[adapter_name]}")
+                    print(f"\n[DEBUG] --- All Adapters Loaded ---")
+                    print(f"[DEBUG] Available adapters: {list(model.peft_config.keys())}")
                 
                 # merge
+                adapter_names = [str(i) for i in range(len(passages))]
                 if enable_debug:
-                    print(f"\n[DEBUG] Merging adapters with combination_type='cat'")
-                    print(f"[DEBUG] Adapter names: {[str(i) for i in range(len(passages))]}")
-                    print(f"[DEBUG] Weights: {[1] * len(passages)}")
+                    print(f"\n[DEBUG] --- Merging Adapters ---")
+                    print(f"[DEBUG] Merging adapters: {adapter_names}")
+                    print(f"[DEBUG] Merge weights: {[1] * len(passages)}")
+                    print(f"[DEBUG] Combination type: 'cat'")
                 
                 model.add_weighted_adapter(
-                    adapters = [str(i) for i in range(len(passages))], 
+                    adapters = adapter_names, 
                     weights = [1] * len(passages),
                     adapter_name = "merge", 
                     combination_type = "cat",
@@ -152,15 +160,21 @@ def main(args):
                 model.set_adapter("merge")
                 
                 if enable_debug:
-                    print(f"\n[DEBUG] After merge - Active adapter: {model.active_adapter}")
-                    print_lora_weights(model, tag="MERGED adapter weights", max_layers=2)
+                    print(f"\n[DEBUG] --- After Merge ---")
+                    print(f"[DEBUG] Active adapter: {model.active_adapter}")
+                    print_merged_lora_info(model, adapter_names, tag="MERGED adapters")
+                    print_lora_sample_values(model, tag="MERGED adapter (sample values)", layer_idx=0)
+                    
+                    # Compare base model with LoRA-applied model
+                    print(f"\n[DEBUG] --- Base Model vs LoRA Model Comparison ---")
+                    compare_base_model_with_lora(base_model_ref, model, tag="After merging adapters")
                 
                 # Debug: Show what input will be used
                 if enable_debug:
                     if args.inference_method == "prag":
-                        print(f"[DEBUG] PRAG mode: passages=None (not using context in prompt)")
+                        print(f"\n[DEBUG] PRAG mode: Using LoRA weights WITHOUT context in prompt")
                     else:
-                        print(f"[DEBUG] COMBINE mode: passages provided (using context in prompt)")
+                        print(f"\n[DEBUG] COMBINE mode: Using LoRA weights WITH context in prompt")
                 
                 ret.append(get_pred(model, psgs=None if args.inference_method == "prag" else passages))
                 model.delete_adapter("merge")

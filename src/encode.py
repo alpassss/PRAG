@@ -11,7 +11,7 @@ from typing import Dict, List
 
 import prompt_template
 from root_dir_path import ROOT_DIR
-from utils import get_model, load_data, print_lora_weights, print_adapter_weights_from_path, compare_lora_weights, DEBUG_MAX_ITEMS
+from utils import get_model, load_data, print_lora_weights, print_adapter_weights_from_path, compare_lora_weights, DEBUG_MAX_ITEMS, print_lora_sample_values
 
 import numpy as np
 import random
@@ -101,14 +101,23 @@ def train(question, augments, args, model, tokenizer,
         collate_fn=TrainingDataCollator(tokenizer, model.device),
         shuffle=False,
     )
+    
+    # Debug: Show loading location
+    if debug_lora:
+        print(f"\n{'='*60}")
+        print(f"[DEBUG] ENCODE - Training LoRA weights")
+        print(f"{'='*60}")
+        print(f"[DEBUG] Loading BASE adapter from: {init_adapter_path}")
+        print(f"[DEBUG] Will SAVE trained adapter to: {save_path}")
+        print_lora_sample_values(init_adapter_path, tag="BASE adapter (before training)", layer_idx=0)
+    
     model = PeftModel.from_pretrained(model, init_adapter_path, is_trainable=True)
     model.is_parallelizable = True
     model.model_parallel = True
     
     # Debug: Print LoRA weights before training
     if debug_lora:
-        print(f"\n[DEBUG] Training for: {save_path}")
-        print_lora_weights(model, tag=f"BEFORE training", max_layers=2)
+        print_lora_weights(model, tag=f"BEFORE training (in model)", max_layers=2)
     
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     optimizer = torch.optim.AdamW(model_parameters, lr=args.learning_rate)
@@ -127,20 +136,24 @@ def train(question, augments, args, model, tokenizer,
     # Debug: Print LoRA weights after training
     if debug_lora:
         avg_loss = total_loss / num_steps if num_steps > 0 else 0
-        print(f"[DEBUG] Training completed. Avg Loss: {avg_loss:.4f}, Total steps: {num_steps}")
-        print_lora_weights(model, tag=f"AFTER training", max_layers=2)
+        print(f"\n[DEBUG] Training completed. Avg Loss: {avg_loss:.4f}, Total steps: {num_steps}")
+        print_lora_weights(model, tag=f"AFTER training (in model)", max_layers=2)
+        print_lora_sample_values(model, tag="AFTER training (sample values)", layer_idx=0)
     
     os.makedirs(save_path, exist_ok=True)
     model.save_pretrained(save_path)
     
     # Debug: Verify saved weights and compare with base weights
     if debug_lora:
-        print_adapter_weights_from_path(save_path, tag="SAVED weights")
+        print(f"\n[DEBUG] Saved adapter to: {save_path}")
+        print_lora_sample_values(save_path, tag="SAVED weights (from file)", layer_idx=0)
         print("\n[DEBUG] Comparing SAVED weights with BASE weights:")
         is_different = compare_lora_weights(init_adapter_path, save_path, 
                                             tag1="BASE", tag2="TRAINED")
         if not is_different:
             print("WARNING: Trained weights appear IDENTICAL to base weights! Training may not have worked.")
+        else:
+            print("SUCCESS: Training modified the weights!")
     
     model = model.unload()
     torch.cuda.empty_cache()

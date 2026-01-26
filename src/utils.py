@@ -527,3 +527,218 @@ def compare_lora_weights(model1_or_path, model2_or_path, tag1="model1", tag2="mo
         return False
     
     print(f"{'='*60}\n")
+
+
+def print_lora_sample_values(model_or_path, tag="", num_samples=5, layer_idx=0):
+    """
+    Print actual sample values from LoRA A and B matrices for detailed inspection.
+    
+    Args:
+        model_or_path: PeftModel instance or path to saved adapter
+        tag: A tag to identify when this is called
+        num_samples: Number of sample values to print from each matrix
+        layer_idx: Which layer to show detailed values for
+    """
+    print(f"\n{'='*60}")
+    print(f"LoRA Sample Values [{tag}]")
+    print(f"{'='*60}")
+    
+    try:
+        if isinstance(model_or_path, str):
+            # Load from path
+            safetensor_path = os.path.join(model_or_path, "adapter_model.safetensors")
+            bin_path = os.path.join(model_or_path, "adapter_model.bin")
+            
+            if os.path.exists(safetensor_path):
+                if safetensors_torch is None:
+                    print("WARNING: safetensors not installed")
+                    return
+                state_dict = safetensors_torch.load_file(safetensor_path)
+                print(f"Loaded from: {safetensor_path}")
+            elif os.path.exists(bin_path):
+                state_dict = torch.load(bin_path, map_location='cpu')
+                print(f"Loaded from: {bin_path}")
+            else:
+                print(f"WARNING: No adapter file found at {model_or_path}")
+                return
+        else:
+            # Extract from model
+            state_dict = {}
+            for name, param in model_or_path.named_parameters():
+                if 'lora_A' in name or 'lora_B' in name:
+                    state_dict[name] = param.data.clone()
+            print(f"Extracted from model in memory")
+        
+        # Find LoRA A and B for the specified layer
+        target_layer = f"layers.{layer_idx}"
+        for name, data in sorted(state_dict.items()):
+            if target_layer in name or (layer_idx == 0 and 'layers.0' not in name and 'layer' not in name):
+                data = data.float()
+                print(f"\n{name}")
+                print(f"  Shape: {tuple(data.shape)}")
+                print(f"  Stats - Mean: {data.mean().item():.8f}, Std: {data.std().item():.8f}")
+                print(f"  Stats - Min: {data.min().item():.8f}, Max: {data.max().item():.8f}")
+                print(f"  Stats - Norm: {data.norm().item():.8f}")
+                
+                # Print sample values
+                flat = data.flatten()
+                sample_indices = [0, len(flat)//4, len(flat)//2, 3*len(flat)//4, len(flat)-1][:num_samples]
+                sample_values = [flat[i].item() for i in sample_indices]
+                print(f"  Sample values at indices {sample_indices}:")
+                print(f"    {[f'{v:.8f}' for v in sample_values]}")
+                
+                # Check if all zeros
+                if data.abs().max().item() < 1e-10:
+                    print(f"  *** ALL ZEROS (not trained) ***")
+                
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    print(f"{'='*60}\n")
+
+
+def compare_base_model_with_lora(base_model, lora_model, tag="", max_layers=2):
+    """
+    Compare base model weights with model that has LoRA applied.
+    Shows the difference in weights for LoRA-affected layers only.
+    
+    Args:
+        base_model: The original model without LoRA
+        lora_model: The model with LoRA adapters merged/applied
+        tag: A tag to identify this comparison
+        max_layers: Maximum number of layers to show detailed comparison
+    """
+    print(f"\n{'='*60}")
+    print(f"Base Model vs LoRA Model Comparison [{tag}]")
+    print(f"{'='*60}")
+    
+    try:
+        # Get target modules that LoRA affects
+        target_modules = ['down_proj', 'gate_proj', 'up_proj']
+        
+        base_params = dict(base_model.named_parameters())
+        lora_params = dict(lora_model.named_parameters())
+        
+        layers_shown = 0
+        total_diff = 0
+        num_compared = 0
+        
+        for name in sorted(base_params.keys()):
+            # Check if this is a target module
+            is_target = any(tm in name for tm in target_modules)
+            if not is_target:
+                continue
+            
+            # Skip if not in lora_model
+            if name not in lora_params:
+                continue
+            
+            base_data = base_params[name].data.float()
+            lora_data = lora_params[name].data.float()
+            
+            diff = (base_data - lora_data).abs()
+            max_diff = diff.max().item()
+            mean_diff = diff.mean().item()
+            
+            total_diff += mean_diff
+            num_compared += 1
+            
+            # Only print details for first few layers
+            if 'layers.0.' in name or 'layers.1.' in name:
+                if layers_shown < max_layers * 3:  # 3 target modules per layer
+                    print(f"\n{name}")
+                    print(f"  Base shape: {tuple(base_data.shape)}")
+                    print(f"  Max diff: {max_diff:.8f}, Mean diff: {mean_diff:.8f}")
+                    
+                    # Show sample values comparison
+                    flat_base = base_data.flatten()
+                    flat_lora = lora_data.flatten()
+                    sample_idx = [0, len(flat_base)//2, len(flat_base)-1]
+                    print(f"  Sample comparison at indices {sample_idx}:")
+                    for idx in sample_idx:
+                        b_val = flat_base[idx].item()
+                        l_val = flat_lora[idx].item()
+                        print(f"    [{idx}] Base: {b_val:.8f}, LoRA: {l_val:.8f}, Diff: {abs(b_val-l_val):.8f}")
+                    
+                    layers_shown += 1
+        
+        avg_diff = total_diff / num_compared if num_compared > 0 else 0
+        print(f"\n--- Summary ---")
+        print(f"Compared {num_compared} target module parameters")
+        print(f"Average difference: {avg_diff:.8f}")
+        if avg_diff < 1e-8:
+            print("WARNING: No difference detected! LoRA may not be properly applied.")
+        else:
+            print("LoRA modifications detected in target modules.")
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    print(f"{'='*60}\n")
+
+
+def print_merged_lora_info(model, adapter_names, tag=""):
+    """
+    Print information about merged LoRA adapters.
+    
+    Args:
+        model: PeftModel with multiple adapters loaded
+        adapter_names: List of adapter names that were merged
+        tag: A tag to identify this output
+    """
+    print(f"\n{'='*60}")
+    print(f"Merged LoRA Info [{tag}]")
+    print(f"{'='*60}")
+    
+    try:
+        print(f"Merged adapters: {adapter_names}")
+        print(f"Active adapter: {model.active_adapter if hasattr(model, 'active_adapter') else 'N/A'}")
+        
+        # Count and summarize LoRA parameters
+        lora_a_count = 0
+        lora_b_count = 0
+        lora_a_norms = []
+        lora_b_norms = []
+        
+        for name, param in model.named_parameters():
+            if 'lora_A' in name:
+                lora_a_count += 1
+                lora_a_norms.append(param.data.float().norm().item())
+            elif 'lora_B' in name:
+                lora_b_count += 1
+                lora_b_norms.append(param.data.float().norm().item())
+        
+        print(f"\nLoRA_A parameters: {lora_a_count}")
+        if lora_a_norms:
+            print(f"  Avg Norm: {np.mean(lora_a_norms):.6f}")
+            print(f"  Min Norm: {min(lora_a_norms):.6f}, Max Norm: {max(lora_a_norms):.6f}")
+        
+        print(f"\nLoRA_B parameters: {lora_b_count}")
+        if lora_b_norms:
+            print(f"  Avg Norm: {np.mean(lora_b_norms):.6f}")
+            print(f"  Min Norm: {min(lora_b_norms):.6f}, Max Norm: {max(lora_b_norms):.6f}")
+            if np.mean(lora_b_norms) < 1e-8:
+                print("  WARNING: LoRA_B norms are near zero!")
+        
+        # Show sample from first layer
+        print("\n--- Sample from layers.0 ---")
+        for name, param in model.named_parameters():
+            if 'layers.0.' in name and ('lora_A' in name or 'lora_B' in name):
+                if 'down_proj' in name:
+                    data = param.data.float()
+                    print(f"  {name}")
+                    print(f"    Shape: {tuple(data.shape)}, Norm: {data.norm().item():.6f}")
+                    flat = data.flatten()
+                    print(f"    First 3 values: {[f'{flat[i].item():.8f}' for i in range(min(3, len(flat)))]}")
+                    break
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    print(f"{'='*60}\n")
