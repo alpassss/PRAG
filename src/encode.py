@@ -19,6 +19,7 @@ from lora_debug import (
     debug_encode_after_training,
     get_lora_weights,
     print_lora_storage_info,
+    verify_saved_adapter,
 )
 
 import numpy as np
@@ -133,6 +134,8 @@ def train(question, augments, args, model, tokenizer,
     # DEBUG: Show LoRA weights after training and compare
     if debug:
         debug_encode_after_training(model, save_path, initial_weights)
+        # Verify by directly reading the saved safetensors file
+        verify_saved_adapter(save_path)
     model = model.unload()
     torch.cuda.empty_cache()
     gc.collect()

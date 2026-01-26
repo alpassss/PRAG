@@ -20,6 +20,7 @@ from lora_debug import (
     print_adapter_info,
     print_lora_storage_info,
     compare_model_weights_before_after_lora,
+    read_safetensors_file,
 )
 
 def main(args):

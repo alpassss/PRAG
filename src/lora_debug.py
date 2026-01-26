@@ -10,6 +10,16 @@ import os
 import torch
 from typing import Dict, List, Optional
 
+# Try to import safetensors for direct file reading
+try:
+    from safetensors import safe_open
+    SAFETENSORS_AVAILABLE = True
+except ImportError:
+    SAFETENSORS_AVAILABLE = False
+
+# Threshold for considering a tensor as "zero"
+ZERO_THRESHOLD = 1e-10
+
 
 def get_lora_weights(model, adapter_name: str = "default") -> Dict[str, Dict[str, torch.Tensor]]:
     """
@@ -321,11 +331,17 @@ def debug_inference_load_adapter(model, adapter_path: str, adapter_name: str, pi
     print("#" * 80)
     
     print_lora_storage_info(adapter_path, f"Loaded LoRA Storage Info (Adapter '{adapter_name}')")
+    
+    # Directly read the safetensors file to see what's actually stored
+    print("\n  [Direct file read - what's actually saved on disk:]")
+    read_safetensors_file(adapter_path, f"Safetensors File for Adapter '{adapter_name}'")
+    
     print_adapter_info(model, f"Adapter Info after loading '{adapter_name}'")
     
-    # Get LoRA weights for this adapter
+    # Get LoRA weights for this adapter (what's loaded in memory)
+    print("\n  [Model memory - what's loaded into the model:]")
     lora_weights = get_lora_weights(model, adapter_name)
-    print_lora_weight_summary(lora_weights, f"LoRA Weights for Adapter '{adapter_name}'", num_layers=2)
+    print_lora_weight_summary(lora_weights, f"LoRA Weights for Adapter '{adapter_name}' (in memory)", num_layers=2)
 
 
 def debug_inference_after_merge(model, adapter_names: List[str], 
@@ -367,3 +383,64 @@ def capture_base_model_weights(model, target_modules: List[str] = ['down_proj', 
             if 'lora' not in name.lower():
                 weights[name] = param.data.clone()
     return weights
+
+
+def read_safetensors_file(adapter_path: str, title: str = "Safetensors File Contents"):
+    """
+    Directly read and display the contents of a safetensors file to verify what's actually saved.
+    This is useful for debugging when model loading seems to not work correctly.
+    """
+    print("\n" + "=" * 80)
+    print(f" {title}")
+    print("=" * 80)
+    
+    safetensors_path = os.path.join(adapter_path, "adapter_model.safetensors")
+    
+    if not os.path.exists(safetensors_path):
+        print(f"  [ERROR] File not found: {safetensors_path}")
+        return None
+    
+    if not SAFETENSORS_AVAILABLE:
+        print("  [ERROR] safetensors library not installed. Run: pip install safetensors")
+        return None
+    
+    try:
+        weights = {}
+        with safe_open(safetensors_path, framework="pt", device="cpu") as f:
+            print(f"  File: {safetensors_path}")
+            print(f"  Keys in file: {list(f.keys())}")
+            
+            for key in f.keys():
+                tensor = f.get_tensor(key)
+                weights[key] = tensor
+                
+                # Show summary for lora_A and lora_B
+                if 'lora_A' in key or 'lora_B' in key:
+                    print(f"\n  [{key}]")
+                    print(f"    Shape: {tuple(tensor.shape)}")
+                    print(f"    Mean:  {tensor.mean().item():.8f}")
+                    print(f"    Std:   {tensor.std().item():.8f}")
+                    print(f"    Min:   {tensor.min().item():.8f}")
+                    print(f"    Max:   {tensor.max().item():.8f}")
+                    print(f"    First 5 values: {tensor.flatten()[:5].tolist()}")
+                    
+                    # Check if all zeros
+                    if tensor.abs().max().item() < ZERO_THRESHOLD:
+                        print(f"    [WARNING] This tensor is all zeros!")
+        
+        return weights
+    except Exception as e:
+        print(f"  [ERROR] Failed to read safetensors file: {e}")
+        return None
+
+
+def verify_saved_adapter(save_path: str):
+    """
+    Verify that the adapter was saved correctly by reading the safetensors file directly.
+    This should be called after model.save_pretrained() to confirm the weights are saved.
+    """
+    print("\n" + "#" * 80)
+    print(" VERIFICATION: Checking saved adapter file")
+    print("#" * 80)
+    
+    read_safetensors_file(save_path, f"Saved Adapter Contents at {save_path}")
