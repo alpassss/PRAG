@@ -495,14 +495,16 @@ def debug_inference_load_adapter(model, adapter_path: str, adapter_name: str, pi
             print(f"  [ERROR] Adapter path does not exist: {adapter_path}")
             return
         
-        # Quick check for zero weights
+        # Quick check for zero lora_B weights
         lora_weights = get_lora_weights(model, adapter_name)
         if lora_weights:
-            zero_count = sum(1 for weights in lora_weights.values() 
-                           for wt in ['lora_B'] 
-                           if wt in weights and weights[wt].abs().max().item() < ZERO_THRESHOLD)
-            if zero_count > 0:
-                print(f"  [WARNING] Adapter '{adapter_name}': {zero_count} zero lora_B weights detected")
+            zero_lora_b_count = 0
+            for weights in lora_weights.values():
+                if 'lora_B' in weights and weights['lora_B'].abs().max().item() < ZERO_THRESHOLD:
+                    zero_lora_b_count += 1
+            
+            if zero_lora_b_count > 0:
+                print(f"  [WARNING] Adapter '{adapter_name}': {zero_lora_b_count} zero lora_B weights detected")
         return
     
     # Verbose output
@@ -544,14 +546,20 @@ def debug_inference_after_merge(model, adapter_names: List[str],
         active = model.active_adapter if hasattr(model, 'active_adapter') else 'N/A'
         print(f"  [INFO] LoRA merge completed: {len(adapter_names)} adapters merged into '{active}'")
         
-        # Quick check if LoRA was applied
+        # Quick check if LoRA was applied (without cloning full state dict)
         if base_model_state_dict is not None:
-            current_state_dict = {k: v.clone() for k, v in model.state_dict().items() 
-                                if 'lora' not in k.lower()}
+            # Only compare target module weights to avoid memory overhead
+            target_modules = ['down_proj', 'gate_proj', 'up_proj']
+            current_relevant_weights = {}
+            for name, param in model.named_parameters():
+                if any(target in name for target in target_modules) and 'lora' not in name.lower():
+                    if name in base_model_state_dict:
+                        current_relevant_weights[name] = param.data
+            
             compare_model_weights_before_after_lora(
                 base_model_state_dict, 
-                current_state_dict,
-                target_modules=['down_proj', 'gate_proj', 'up_proj'],
+                current_relevant_weights,
+                target_modules=target_modules,
                 num_layers=3,
                 verbose=False
             )
