@@ -183,62 +183,110 @@ LoRA Weights for Adapter '0' (in memory)
 
 ### 4.1 问题根源
 
-经过详细诊断，我们发现问题的根本原因在于 `adapter_config.json` 文件中的 `inference_mode` 配置参数。
+经过详细诊断，我们发现问题的根本原因是**模型结构嵌套不一致**导致的权重键名不匹配问题。
 
-当 `inference_mode` 被设置为 `true` 时，PEFT 库在加载适配器时会跳过 `lora_B` 权重的加载，因为在纯推理模式下，库假设 `lora_B` 保持其初始化状态（通常为零）。
+#### 4.1.1 关于 `inference_mode` 参数的澄清
 
-### 4.2 配置文件分析
+首先需要澄清一个常见误解：**`inference_mode=true` 本身并不会阻止 `lora_B` 权重的加载**。
 
-**问题配置** (原始 `adapter_config.json`):
-```json
-{
-    "r": 2,
-    "lora_alpha": 32,
-    "target_modules": ["down_proj", "gate_proj", "up_proj"],
-    "lora_dropout": 0,
-    "inference_mode": true,  // 问题所在
-    "init_lora_weights": true
-}
+在标准的 LoRA 使用流程中：
+- **训练时**: LoRA 的 `lora_A` 使用 Kaiming 初始化，`lora_B` 初始化为零
+- **训练后**: `lora_B` 通过反向传播学习到非零值
+- **推理时**: 无论 `inference_mode` 设置为何值，PEFT 库都应该从磁盘正确加载 `lora_A` 和 `lora_B` 的训练好的权重
+
+`inference_mode=true` 的作用是**禁用梯度计算**和**冻结参数**，而不是跳过权重加载。
+
+#### 4.1.2 真正的问题：模型结构嵌套
+
+诊断过程中发现的关键线索是**参数键名结构不一致**：
+
+**训练时的参数键名**（嵌套 PeftModel）:
+```
+base_model.model.base_model.model.model.layers.0.mlp.down_proj.lora_B
 ```
 
-### 4.3 PEFT 库行为分析
+**推理时期望的参数键名**（单层 PeftModel）:
+```
+base_model.model.model.layers.0.mlp.down_proj.lora_B
+```
 
-PEFT 库的 LoRA 实现遵循以下逻辑：
+这种不一致的原因是在 `encode.py` 中，创建并保存 `base_weight` 后，模型仍然保持为 `PeftModel` 状态。当训练循环调用 `PeftModel.from_pretrained(model, ...)` 时，它创建了**嵌套的 PeftModel 结构**（PeftModel 包裹着另一个 PeftModel）。
 
-1. **训练模式** (`inference_mode=false`):
-   - 完全加载 `lora_A` 和 `lora_B` 权重
-   - 允许梯度计算和权重更新
-
-2. **推理模式** (`inference_mode=true`):
-   - 加载 `lora_A` 权重
-   - **跳过 `lora_B` 权重加载**（假设保持初始化状态）
-   - 禁用梯度计算
-
-这种设计的初衷是优化推理性能，但在需要加载预训练 LoRA 权重的场景下会导致问题。
-
-### 4.4 问题传播链
+### 4.2 问题传播链（修正版）
 
 ```
-encode.py 保存适配器 (inference_mode=false)
+encode.py 创建 base_weight 
     ↓
-adapter_config.json 中记录 inference_mode=true（PEFT 默认行为）
+未调用 model.unload()，模型保持 PeftModel 状态
     ↓
-inference.py 加载适配器
+训练时再次调用 PeftModel.from_pretrained()
     ↓
-PEFT 检测到 inference_mode=true
+创建嵌套 PeftModel 结构
     ↓
-跳过 lora_B 权重加载，保持全零状态
+保存的权重键名包含双重嵌套: base_model.model.base_model.model...
+    ↓
+inference.py 以单层 PeftModel 加载
+    ↓
+键名不匹配，PEFT 无法找到对应的 lora_B 权重
+    ↓
+lora_B 保持初始化状态（全零）
     ↓
 LoRA 对模型输出无影响（因为 ΔW = lora_B @ lora_A = 0）
     ↓
 combine 模式结果与 icl 模式相同
 ```
 
+### 4.3 PEFT 库正常行为说明
+
+为了避免混淆，这里说明 PEFT 库的正常行为：
+
+| 参数/设置 | 训练模式 | 推理模式 |
+|----------|---------|---------|
+| `inference_mode` | `false` | `true` 或 `false` |
+| 加载 `lora_A` | ✓ | ✓ |
+| 加载 `lora_B` | ✓ | **✓** |
+| 梯度计算 | 启用 | 禁用 |
+| 参数更新 | 允许 | 冻结 |
+
+**重点**: 在正常情况下，无论 `inference_mode` 如何设置，训练好的 `lora_A` 和 `lora_B` 权重都应该被正确加载。本案例中的问题是由于模型结构不一致导致的键名匹配失败。
+
+### 4.4 配置文件参考
+
+`adapter_config.json` 示例：
+```json
+{
+    "r": 2,
+    "lora_alpha": 32,
+    "target_modules": ["down_proj", "gate_proj", "up_proj"],
+    "lora_dropout": 0,
+    "inference_mode": false,
+    "init_lora_weights": true
+}
+```
+
+注：`inference_mode` 应设置为 `false` 以确保保存时模型结构的一致性，但这并不是权重加载失败的直接原因。
+
 ---
 
 ## 5. 解决方案
 
-### 5.1 方案一：修改编码阶段配置（推荐）
+### 5.1 方案一：修复编码阶段的模型状态（关键修复）
+
+在 `src/encode.py` 中，创建并保存 `base_weight` 后，需要调用 `model.unload()` 将模型恢复为基础模型状态：
+
+```python
+# 创建并保存 base_weight 后
+model.save_pretrained(init_adapter_path)
+
+# 关键修复：卸载 PeftModel，恢复为基础模型
+model = model.unload()
+torch.cuda.empty_cache()
+gc.collect()
+```
+
+这样可以确保后续训练时不会创建嵌套的 PeftModel 结构。
+
+### 5.2 方案二：确保配置一致性
 
 在 `src/encode.py` 中创建 LoRA 配置时，显式设置 `inference_mode=False`:
 
@@ -246,32 +294,18 @@ combine 模式结果与 icl 模式相同
 peft_config = LoraConfig(
     task_type=TaskType.CAUSAL_LM,
     target_modules=['down_proj', 'gate_proj', 'up_proj'],
-    inference_mode=False,  # 确保保存时不设置为推理模式
+    inference_mode=False,  # 确保保存时模型处于训练模式
     r=args.lora_rank,
     lora_alpha=args.lora_alpha,
     lora_dropout=0,
 )
 ```
 
-### 5.2 方案二：修改推理阶段加载
-
-在 `src/inference.py` 中加载适配器时强制禁用推理模式:
-
-```python
-model = PeftModel.from_pretrained(
-    model, 
-    adapter_path,
-    adapter_name="0", 
-    is_trainable=False,  # 仍然禁用训练
-    # PEFT 会自动处理权重加载
-)
-```
-
 ### 5.3 实施步骤
 
-1. **清除旧数据**: 删除 `offline/` 目录中使用旧配置生成的所有适配器文件
-2. **应用代码修复**: 更新 `encode.py` 中的 LoRA 配置
-3. **重新训练**: 运行完整的编码流程，生成新的适配器文件
+1. **清除旧数据**: 删除 `offline/` 目录中使用旧结构生成的所有适配器文件
+2. **应用代码修复**: 更新 `encode.py`，在保存 base_weight 后添加 `model.unload()`
+3. **重新训练**: 运行完整的编码流程，生成新的适配器文件（键名结构正确）
 4. **验证修复**: 使用 `--debug` 参数运行推理，确认 `lora_B` 权重正确加载
 
 ### 5.4 验证结果
@@ -302,23 +336,23 @@ LoRA Weights for Adapter '0' (in memory)
 
 本次问题诊断揭示了以下关键发现：
 
-1. **问题本质**: PEFT 库在 `inference_mode=true` 时会跳过 `lora_B` 权重的加载
-2. **影响范围**: 这一行为会导致所有依赖 LoRA 参数化知识的推理模式失效
-3. **诊断关键**: 通过对比磁盘文件内容与内存中的权重，可以精确定位加载问题
+1. **问题本质**: 模型结构嵌套不一致导致权重键名不匹配，PEFT 无法正确加载 `lora_B` 权重
+2. **误区澄清**: `inference_mode=true` 本身**不会**阻止权重加载，真正的问题是模型结构问题
+3. **诊断关键**: 通过对比磁盘文件内容与内存中的权重，并观察参数键名结构，可以精确定位问题
 
 ### 6.2 技术教训
 
-1. **配置参数重要性**: LoRA 相关的配置参数（尤其是 `inference_mode`）对实际行为有重大影响
-2. **端到端验证**: 仅验证训练阶段正确性不足，需要验证完整的训练-保存-加载-推理链路
+1. **模型状态管理**: 使用 PEFT 时，必须注意模型状态的管理。保存适配器后如需继续训练，应先调用 `model.unload()` 恢复基础模型状态
+2. **端到端验证**: 仅验证训练阶段正确性不足，需要验证完整的训练-保存-加载-推理链路，特别是参数键名的一致性
 3. **调试工具价值**: 系统性的调试工具对于定位复杂的机器学习流程问题至关重要
 
 ### 6.3 预防建议
 
 为避免类似问题，建议：
 
-1. **明确配置**: 在所有 LoRA 配置中显式设置关键参数，不依赖默认值
-2. **添加验证**: 在加载适配器后添加权重非零验证检查
-3. **文档记录**: 记录所有配置参数的预期行为和已知限制
+1. **状态清理**: 在保存 PeftModel 后，始终调用 `unload()` 恢复基础模型状态
+2. **键名检查**: 在加载适配器后检查参数键名是否符合预期结构
+3. **权重验证**: 在加载适配器后添加权重非零验证检查
 4. **持续测试**: 建立自动化测试来验证不同模式产生不同的结果
 
 ### 6.4 致谢
