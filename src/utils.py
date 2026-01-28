@@ -160,7 +160,8 @@ def model_generate(prompt, model, tokenizer, generation_config):
     }]
     input_ids = tokenizer.apply_chat_template(
         messages, 
-        add_generation_prompt=True
+        add_generation_prompt=True,
+        return_dict=False  # Ensure list return type for compatibility with all tokenizers
     )
     input_len = len(input_ids)
     input_ids = torch.tensor(input_ids).unsqueeze(0).to(model.device)

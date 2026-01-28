@@ -77,6 +77,7 @@ def get_prompt(tokenizer, question, passages=None, answer=None, with_cot=False):
 
     inputs = tokenizer.apply_chat_template(
         messages, 
-        add_generation_prompt=True)
+        add_generation_prompt=True,
+        return_dict=False)  # Ensure list return type for compatibility with all tokenizers
     inputs += tokenizer.encode(assistant_content, add_special_tokens=False)
     return inputs
