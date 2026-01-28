@@ -123,6 +123,8 @@ def get_model_path(model_name):
     if model_name == "llama3-8b-instruct": 
         return "meta-llama/Meta-Llama-3-8B-Instruct"
     elif model_name == "qwen2.5-1.5b-instruct":
+        return "Qwen/Qwen2.5-1.5B-Instruct"
+    elif model_name == "qwen3-8b":
         return "Qwen/Qwen3-8B"
     elif model_name == "llama3.2-1b-instruct":
         return "meta-llama/Llama-3.2-1B-Instruct"
@@ -134,7 +136,7 @@ def get_model(model_name, max_new_tokens=20):
     model_path = get_model_path(model_name)
     model = AutoModelForCausalLM.from_pretrained(
         model_path, 
-        torch_dtype=torch.float32,
+        dtype=torch.float32,
         low_cpu_mem_usage=True,
         device_map="auto", 
         trust_remote_code=True
