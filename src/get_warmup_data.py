@@ -154,7 +154,8 @@ def create_cot():
             inputs = tokenizer.apply_chat_template(
                 messages, 
                 add_generation_prompt=True,
-                return_dict=False  # Ensure list return type for compatibility with all tokenizers
+                return_dict=False,  # Ensure list return type for compatibility with all tokenizers
+                enable_thinking=False  # Disable Qwen3 thinking mode to prevent <think> tags interference
             )
             inputs += tokenizer.encode(ASSISTANT_PROMPT_WITH_COT, add_special_tokens=False)
             input_len = len(inputs)
