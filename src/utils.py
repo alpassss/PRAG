@@ -159,7 +159,8 @@ def model_generate(prompt, model, tokenizer, generation_config):
     input_ids = tokenizer.apply_chat_template(
         messages, 
         add_generation_prompt=True,
-        return_dict=False  # Ensure list return type for compatibility with all tokenizers
+        return_dict=False,  # Ensure list return type for compatibility with all tokenizers
+        enable_thinking=False  # Disable Qwen3 thinking mode to prevent <think> tags interference
     )
     input_len = len(input_ids)
     input_ids = torch.tensor(input_ids).unsqueeze(0).to(model.device)
