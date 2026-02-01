@@ -208,7 +208,73 @@ By calling the `src/inference.py` file, you will generate a parameterized repres
 | `per_device_train_batch_size`, `num_train_epochs`, `learning_rate` | Training parameters |
 | `lora_rank`, `lora_alpha`       | LoRA parameters, dropout will be set to 0 |
 | `max_new_tokens` | Number of generate tokens |
-| `inference_method` | "icl" is naive RAG, "prag" is our method, and "combine" is using both methods together |
+| `inference_method` | "icl" is naive RAG, "prag" is our method, "combine" is using both methods together. Also supports "misinfo_prag", "misinfo_icl", and "misinfo_plain" for misinformation testing |
+| `train_sample` | (For misinfo modes) Number of training samples used for encoding |
+
+#### Misinformation Testing Modes
+
+Three additional inference methods are available for testing how different approaches handle misinformation:
+
+1. **misinfo_prag**: Randomly selects LoRA weights from a small training set and applies them during inference on a larger test set. This tests whether the parametric representation makes the model more susceptible to misinformation.
+
+2. **misinfo_icl**: Randomly selects passages from the training set as context supplements. This tests whether in-context learning with potentially irrelevant context affects model performance.
+
+3. **misinfo_plain**: Direct question input to the model without any additional context or LoRA weights. This serves as a baseline for comparison.
+
+**Usage Example for Misinformation Testing:**
+
+```bash
+# Step 1: First, train with a small sample (e.g., 30 samples)
+python3 src/encode.py \
+    --model_name=llama3.2-1b-instruct \
+    --dataset=hotpotqa \
+    --sample=30 \
+    --per_device_train_batch_size=1 \
+    --num_train_epochs=1 \
+    --learning_rate=0.0003 \
+    --lora_rank=2 \
+    --lora_alpha=32 \
+    --with_cot
+
+# Step 2: Test with misinfo_prag (random LoRA selection from training set)
+python3 src/inference.py \
+    --model_name=llama3.2-1b-instruct \
+    --dataset=hotpotqa \
+    --sample=300 \
+    --train_sample=30 \
+    --num_train_epochs=1 \
+    --learning_rate=0.0003 \
+    --lora_rank=2 \
+    --lora_alpha=32 \
+    --max_new_tokens=128 \
+    --inference_method=misinfo_prag \
+    --with_cot
+
+# Step 3: Test with misinfo_icl (random passage selection from training set)
+python3 src/inference.py \
+    --model_name=llama3.2-1b-instruct \
+    --dataset=hotpotqa \
+    --sample=300 \
+    --train_sample=30 \
+    --num_train_epochs=1 \
+    --learning_rate=0.0003 \
+    --lora_rank=2 \
+    --lora_alpha=32 \
+    --max_new_tokens=128 \
+    --inference_method=misinfo_icl \
+    --with_cot
+
+# Step 4: Test with misinfo_plain (no context, no LoRA)
+python3 src/inference.py \
+    --model_name=llama3.2-1b-instruct \
+    --dataset=hotpotqa \
+    --sample=300 \
+    --num_train_epochs=1 \
+    --learning_rate=0.0003 \
+    --max_new_tokens=128 \
+    --inference_method=misinfo_plain \
+    --with_cot
+```
 
 All generated results are stored in the `output` folder. The specific location of the parameter files is as follows:
 
