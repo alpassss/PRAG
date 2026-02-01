@@ -86,8 +86,6 @@ def main(args):
     # For misinfo modes, collect available resources from training set
     available_adapters = None
     available_passages = None
-    if args.inference_method == "misinfo_prag" and args.train_sample:
-        print(f"### Collecting available adapters from training set (train_sample={args.train_sample}) ###")
     if args.inference_method == "misinfo_icl" and args.train_sample:
         print(f"### Collecting available passages from training set (train_sample={args.train_sample}) ###")
         available_passages = collect_available_passages(data_list, args.train_sample)
@@ -164,7 +162,9 @@ def main(args):
                         else:
                             model.load_adapter(adapter_path, adapter_name = str(idx))
                     
-                    # merge
+                    # Merge adapters with equal weights using concatenation
+                    # Uniform weights [1, 1, ...] with 'cat' combination type concatenates
+                    # adapter matrices, consistent with the original PRAG implementation
                     model.add_weighted_adapter(
                         adapters = [str(i) for i in range(len(random_adapters))], 
                         weights = [1] * len(random_adapters),
@@ -248,7 +248,8 @@ if __name__ == "__main__":
     if args.inference_method != "misinfo_plain":
         assert args.lora_rank and args.lora_alpha, "No Config for LoRA"
     else:
-        # Set default values for misinfo_plain if not provided
+        # For misinfo_plain mode, LoRA is not used but we set default values
+        # to maintain consistent output directory naming conventions
         if args.lora_rank is None:
             args.lora_rank = 2
         if args.lora_alpha is None:
