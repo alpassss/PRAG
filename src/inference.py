@@ -103,6 +103,10 @@ def main(args):
         if args.inference_method == "misinfo_prag" and args.train_sample:
             available_adapters = collect_available_adapters(load_adapter_path, filename, args.train_sample)
             print(f"### Found {len(available_adapters)} adapters for {filename} ###")
+            if len(available_adapters) == 0:
+                print(f"### WARNING: No adapters found! Expected path: {os.path.join(load_adapter_path, filename)} ###")
+                print(f"### Make sure you have run encode.py with sample={args.train_sample} before inference ###")
+                raise ValueError(f"No adapters found for misinfo_prag mode. Check that encode.py was run with correct parameters.")
 
         predict_file = os.path.join(output_dir, "predict.json")
         ret, start_with = read_complete(predict_file)
@@ -180,8 +184,8 @@ def main(args):
                     torch.cuda.empty_cache()
                     gc.collect()
                 else:
-                    # Fallback to plain mode if no adapters available
-                    ret.append(get_pred(model, psgs=None))
+                    # This should not happen if validation above passed
+                    raise ValueError(f"No adapters available for misinfo_prag mode (unexpected)")
             else:
                 # Original prag/combine modes
                 for pid in range(len(passages)):
