@@ -137,9 +137,7 @@ def main(args):
                 ret.append(get_pred(model, psgs=passages))
             elif args.inference_method == "misinfo_plain":
                 # Plain mode: direct question input without any context or LoRA
-                pred = get_pred(model, psgs=None)
-                print(f"[DEBUG] misinfo_plain test_id={test_id}: {pred['text'][:100]}")
-                ret.append(pred)
+                ret.append(get_pred(model, psgs=None))
             elif args.inference_method == "misinfo_icl":
                 # Misinfo ICL mode: randomly select passages from training set as context
                 if available_passages and len(available_passages) > 0:
@@ -157,8 +155,6 @@ def main(args):
                     num_adapters = min(len(passages), len(available_adapters))
                     random_adapters = random.sample(available_adapters, num_adapters)
                     
-                    print(f"[DEBUG] test_id={test_id}: Loading {len(random_adapters)} random adapters: {[(did, pid) for did, pid, _ in random_adapters]}")
-                    
                     for idx, (did, pid, adapter_path) in enumerate(random_adapters):
                         if idx == 0:
                             model = PeftModel.from_pretrained(
@@ -167,10 +163,8 @@ def main(args):
                                 adapter_name = "0", 
                                 is_trainable = False
                             )
-                            print(f"[DEBUG] Loaded first adapter from {adapter_path}")
                         else:
                             model.load_adapter(adapter_path, adapter_name = str(idx))
-                            print(f"[DEBUG] Loaded adapter {idx} from {adapter_path}")
                     
                     # Merge adapters with equal weights using concatenation
                     # Uniform weights [1, 1, ...] with 'cat' combination type concatenates
@@ -182,11 +176,7 @@ def main(args):
                         combination_type = "cat",
                     )
                     model.set_adapter("merge")
-                    print(f"[DEBUG] Active adapter after set_adapter: {model.active_adapter}")
-                    
                     pred = get_pred(model, psgs=None)
-                    print(f"[DEBUG] Prediction text (first 100 chars): {pred['text'][:100]}")
-                    
                     pred["random_adapters"] = [(did, pid) for did, pid, _ in random_adapters]
                     ret.append(pred)
                     model.delete_adapter("merge")
