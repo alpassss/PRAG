@@ -153,7 +153,8 @@ def create_cot():
             messages = [{"role": "user", "content": user_content}]
             inputs = tokenizer.apply_chat_template(
                 messages, 
-                add_generation_prompt=True
+                add_generation_prompt=True,
+                return_dict=False  # Ensure list return type for compatibility with all tokenizers
             )
             inputs += tokenizer.encode(ASSISTANT_PROMPT_WITH_COT, add_special_tokens=False)
             input_len = len(inputs)

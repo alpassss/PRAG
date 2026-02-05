@@ -15,13 +15,6 @@ from lora_debug import (
     debug_inference_load_adapter,
     debug_inference_after_merge,
     capture_base_model_weights,
-    get_lora_weights,
-    print_lora_weight_summary,
-    print_adapter_info,
-    print_lora_storage_info,
-    compare_model_weights_before_after_lora,
-    read_safetensors_file,
-    compare_file_vs_memory,
 )
 
 def main(args):
@@ -54,21 +47,22 @@ def main(args):
         args.inference_method, 
     )
     
-    # DEBUG: Show load adapter path
+    # Show initial debug info if debug flag is set
     if args.debug:
-        print("\n" + "#" * 80)
-        print(" DEBUG: INFERENCE - INITIALIZATION")
-        print("#" * 80)
+        print("\n" + "=" * 80)
+        print(" LoRA Inference Debug Mode")
+        print("=" * 80)
         print(f"  Inference method: {args.inference_method}")
-        print_lora_storage_info(load_adapter_path, "LoRA Adapter Root Path")
+        print(f"  Adapter path: {load_adapter_path}")
+        if not os.path.exists(load_adapter_path):
+            print(f"  [WARNING] Adapter path does not exist!")
     
     # Capture base model weights for comparison (only needed for prag/combine modes)
     base_model_weights = None
     if args.debug and args.inference_method != "icl":
         base_model_weights = capture_base_model_weights(model)
-        print(f"  Captured {len(base_model_weights)} base model weight tensors for comparison")
+        print(f"  Captured base model weights for comparison")
     
-    debug_count = 0  # Only debug first few iterations to avoid too much output
     for filename, fulldata in data_list:
         filename = filename.split(".")[0]
         print(f"### Solving {filename} ###")
@@ -88,9 +82,6 @@ def main(args):
             question = data["question"]
             passages = data["passages"]
             answer = data["answer"]
-            
-            # Only debug first 2 iterations
-            should_debug = args.debug and debug_count < 2
 
             def get_pred(model, psgs):
                 text = predict(model, tokenizer, generation_config, 
@@ -108,17 +99,11 @@ def main(args):
             if args.inference_method == "icl":
                 ret.append(get_pred(model, psgs=passages))
             else:
-                if should_debug:
-                    print("\n" + "#" * 80)
-                    print(f" DEBUG: INFERENCE - LOADING ADAPTERS (test_id={test_id})")
-                    print("#" * 80)
+                if args.debug and test_id == start_with:
+                    print(f"\n[DEBUG] Loading and merging LoRA adapters for test_id={test_id}...")
                 
                 for pid in range(len(passages)):
                     adapter_path = os.path.join(load_adapter_path, filename, f"data_{test_id}", f"passage_{pid}")
-                    
-                    # DEBUG: First verify what's in the file before loading
-                    if should_debug:
-                        read_safetensors_file(adapter_path, f"File Contents BEFORE Loading Adapter '{pid}'")
                     
                     if pid == 0:
                         model = PeftModel.from_pretrained(
@@ -130,18 +115,13 @@ def main(args):
                     else:
                         model.load_adapter(adapter_path, adapter_name=str(pid))
                     
-                    # DEBUG: Show loaded adapter info (in model memory)
-                    if should_debug:
-                        debug_inference_load_adapter(model, adapter_path, str(pid), pid)
+                    # Debug adapter loading only for first test case
+                    if args.debug and test_id == start_with:
+                        debug_inference_load_adapter(model, adapter_path, str(pid), pid, verbose=False)
                 
                 # merge
-                if should_debug:
-                    print("\n" + "#" * 80)
-                    print(f" DEBUG: INFERENCE - MERGING ADAPTERS (test_id={test_id})")
-                    print("#" * 80)
-                    print(f"  Adapters to merge: {[str(i) for i in range(len(passages))]}")
-                    print(f"  Weights: {[1] * len(passages)}")
-                    print(f"  Combination type: cat")
+                if args.debug and test_id == start_with:
+                    print(f"  Merging {len(passages)} adapters...")
                 
                 model.add_weighted_adapter(
                     adapters = [str(i) for i in range(len(passages))], 
@@ -151,14 +131,15 @@ def main(args):
                 )
                 model.set_adapter("merge")
                 
-                # DEBUG: Show merged adapter info and compare with base model
-                if should_debug:
+                # Debug merge result only for first test case
+                if args.debug and test_id == start_with:
                     debug_inference_after_merge(
                         model, 
                         [str(i) for i in range(len(passages))],
-                        base_model_weights
+                        base_model_weights,
+                        verbose=False
                     )
-                    debug_count += 1
+                    print(f"  [INFO] LoRA adapters loaded and merged successfully\n")
                 
                 ret.append(get_pred(model, psgs=None if args.inference_method == "prag" else passages))
                 model.delete_adapter("merge")
